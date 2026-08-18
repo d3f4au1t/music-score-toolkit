@@ -13,7 +13,8 @@
   MuseScore TPC mappings.
 - `mscz.py` performs XML transformation and atomic MSCZ repacking.
 - `tools.py` discovers MuseScore/SmartScore and runs MuseScore conversion.
-- `workflows.py` coordinates the manual SmartScore export loop.
+- `workflows.py` coordinates the manual SmartScore export loop, including
+  stable-file detection and MusicXML/MXL container validation.
 - `cli.py` provides stable user-facing commands and JSON reports.
 
 ## Transformation boundary

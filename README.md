@@ -29,8 +29,8 @@ and regression tests against both original MSCZ samples.
 - Abort before writing output when a transposition exceeds MIDI `0..127`.
 - Convert MusicXML, MSCZ, and other MuseScore-supported inputs through the
   MuseScore 4 CLI.
-- Launch SmartScore for manual PDF recognition, wait for MusicXML export, and
-  complete the conversion to MSCZ.
+- Launch SmartScore for manual PDF recognition, wait for a stable and valid
+  MusicXML/MXL export, and complete the conversion to MSCZ.
 - Run without third-party Python packages for core transposition.
 
 ## Installation
@@ -99,7 +99,9 @@ music-score recognize scan.pdf ./recognized --timeout 1800
 
 SmartScore recognition remains a manual proofreading step. Save the exported
 `.mxl`, `.musicxml`, or `.xml` file in the requested output directory; the
-toolkit detects it and asks MuseScore to create the final MSCZ file.
+toolkit waits until its size and timestamps stop changing, validates its
+MusicXML score structure, and only then asks MuseScore to create the final MSCZ
+file. Unrelated XML and partial exports are ignored while the workflow waits.
 
 ## Desktop dependencies
 
