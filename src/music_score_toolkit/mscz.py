@@ -9,7 +9,13 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .keys import KEY_SIGNATURES, calculate_shift, normalize_key, spelling_for_key, tpc_for_pitch
+from .keys import (
+    calculate_shift,
+    normalize_key,
+    spelling_for_key,
+    tpc_for_pitch,
+    transpose_key_signature,
+)
 
 
 class ScoreFormatError(ValueError):
@@ -38,6 +44,40 @@ def _spelling_preference(note: ET.Element, target_key: str) -> str:
     if "sharp" in text:
         return "sharp"
     return spelling_for_key(target_key)
+
+
+def _transpose_key_signature(
+    key_signature: ET.Element,
+    semitone_shift: int,
+    target_spelling: str,
+) -> bool:
+    """Transpose MuseScore 4 and legacy conventional key fields in place."""
+
+    custom = key_signature.find("custom")
+    if key_signature.find("CustDef") is not None or (
+        custom is not None and custom.text not in {None, "", "0"}
+    ):
+        return False
+
+    changed = False
+    for field_name in ("concertKey", "actualKey", "accidental"):
+        field = key_signature.find(field_name)
+        if field is None or field.text is None:
+            continue
+        try:
+            current = int(field.text)
+        except ValueError as exc:
+            raise ScoreFormatError(
+                f"Invalid MuseScore {field_name} value: {field.text!r}"
+            ) from exc
+        try:
+            updated = transpose_key_signature(current, semitone_shift, target_spelling)
+        except ValueError as exc:
+            raise ScoreFormatError(f"Invalid MuseScore {field_name} value: {current}") from exc
+        if updated != current:
+            field.text = str(updated)
+            changed = True
+    return changed
 
 
 def transpose_mscx(
@@ -88,13 +128,10 @@ def transpose_mscx(
         note_count += 1
 
     key_signature_count = 0
-    target_signature = KEY_SIGNATURES.get(target_key)
-    if target_signature is not None:
-        for key_signature in root.iter("KeySig"):
-            accidental = key_signature.find("accidental")
-            if accidental is not None:
-                accidental.text = str(target_signature)
-                key_signature_count += 1
+    target_spelling = spelling_for_key(target_key)
+    for key_signature in root.iter("KeySig"):
+        if _transpose_key_signature(key_signature, shift, target_spelling):
+            key_signature_count += 1
 
     had_declaration = (
         content.lstrip().startswith(b"<?xml")
@@ -178,4 +215,3 @@ def transpose_mscz(
         key_signatures_changed=signature_count,
         score_entries_changed=score_count,
     )
-

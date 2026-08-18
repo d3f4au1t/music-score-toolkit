@@ -26,6 +26,21 @@ SCORE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 </museScore>
 """
 
+MUSESCORE_4_KEY_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<museScore version="4.6">
+  <Score><Staff>
+    <Measure>
+      <KeySig><concertKey>0</concertKey><actualKey>2</actualKey></KeySig>
+      <Chord><Note><pitch>60</pitch><tpc>14</tpc></Note></Chord>
+    </Measure>
+    <Measure>
+      <KeySig><concertKey>-1</concertKey></KeySig>
+      <Dynamic><subtype>f</subtype></Dynamic>
+    </Measure>
+  </Staff></Score>
+</museScore>
+"""
+
 
 def test_transposes_notes_and_key_without_removing_structure():
     rendered, report = transpose_mscx(SCORE_XML, "Bb", "C")
@@ -39,6 +54,27 @@ def test_transposes_notes_and_key_without_removing_structure():
     assert report.notes_changed == 2
     assert report.key_signatures_changed == 1
     assert report.semitone_shift == 2
+
+
+def test_musescore_4_key_signatures_follow_whole_step_and_preserve_key_changes():
+    rendered, report = transpose_mscx(MUSESCORE_4_KEY_XML, "C", "D")
+    root = ET.fromstring(rendered)
+
+    assert [int(item.text) for item in root.iter("pitch")] == [62]
+    assert [int(item.text) for item in root.iter("concertKey")] == [2, 1]
+    assert [int(item.text) for item in root.iter("actualKey")] == [4]
+    assert root.find(".//Dynamic/subtype").text == "f"
+    assert report.key_signatures_changed == 2
+
+
+def test_custom_key_signature_is_left_untouched():
+    xml = b"""<museScore><Score><KeySig><custom>1</custom><concertKey>0</concertKey>
+    <CustDef><sym>accidentalSharp</sym></CustDef></KeySig></Score></museScore>"""
+
+    rendered, report = transpose_mscx(xml, "C", "D")
+
+    assert ET.fromstring(rendered).find(".//concertKey").text == "0"
+    assert report.key_signatures_changed == 0
 
 
 def test_preserves_explicit_flat_spelling_and_uses_target_for_unmarked_notes():

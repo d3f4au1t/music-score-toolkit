@@ -6,6 +6,7 @@ from music_score_toolkit.keys import (
     normalize_key,
     spelling_for_key,
     tpc_for_pitch,
+    transpose_key_signature,
 )
 
 
@@ -34,3 +35,13 @@ def test_target_key_controls_default_spelling():
     assert spelling_for_key("Eb") == "flat"
     assert spelling_for_key("E") == "sharp"
     assert tpc_for_pitch(61, "flat") != tpc_for_pitch(61, "sharp")
+
+
+def test_transposes_conventional_key_signatures_by_interval():
+    assert transpose_key_signature(0, 2, "sharp") == 2  # C major -> D major
+    assert transpose_key_signature(-1, 2, "sharp") == 1  # F major -> G major
+
+
+def test_key_signature_transposition_honors_enharmonic_spelling():
+    assert transpose_key_signature(0, 6, "flat") == -6
+    assert transpose_key_signature(0, 6, "sharp") == 6
