@@ -2,22 +2,199 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 import time
-from pathlib import Path
+import xml.etree.ElementTree as ET
+import zipfile
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
 from .tools import convert_score, find_smartscore
 
 SCORE_SUFFIXES = (".mxl", ".musicxml", ".xml")
+MUSICXML_ROOTS = {"score-partwise", "score-timewise"}
+MUSICXML_CONTAINER = "META-INF/container.xml"
+
+
+class ScoreExportError(ValueError):
+    """Raised when a SmartScore export is not a complete MusicXML score."""
+
+
+@dataclass(frozen=True, slots=True)
+class _FileFingerprint:
+    device: int
+    inode: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+
+
+def _fingerprint(item_stat: os.stat_result) -> _FileFingerprint:
+    return _FileFingerprint(
+        device=item_stat.st_dev,
+        inode=item_stat.st_ino,
+        size=item_stat.st_size,
+        modified_ns=item_stat.st_mtime_ns,
+        changed_ns=item_stat.st_ctime_ns,
+    )
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _validate_musicxml_root(root: ET.Element, *, source: Path) -> None:
+    root_name = _local_name(root.tag)
+    if root_name not in MUSICXML_ROOTS:
+        raise ScoreExportError(
+            f"Expected a MusicXML score root in {source}, found <{root_name}>."
+        )
+
+    children = list(root)
+    part_list = next(
+        (child for child in children if _local_name(child.tag) == "part-list"),
+        None,
+    )
+    if part_list is None or not any(
+        _local_name(child.tag) == "score-part" for child in part_list
+    ):
+        raise ScoreExportError(f"MusicXML score has no populated <part-list>: {source}")
+
+    if root_name == "score-partwise":
+        parts = [child for child in children if _local_name(child.tag) == "part"]
+        has_music = bool(parts) and all(
+            any(_local_name(child.tag) == "measure" for child in part) for part in parts
+        )
+    else:
+        measures = [child for child in children if _local_name(child.tag) == "measure"]
+        has_music = bool(measures) and all(
+            any(_local_name(child.tag) == "part" for child in measure)
+            for measure in measures
+        )
+    if not has_music:
+        raise ScoreExportError(f"MusicXML score has an incomplete part/measure structure: {source}")
+
+
+def _parse_musicxml(payload: bytes, *, source: Path) -> None:
+    try:
+        root = ET.fromstring(payload)
+    except (ET.ParseError, LookupError) as exc:
+        raise ScoreExportError(f"Incomplete or invalid MusicXML in {source}: {exc}") from exc
+    _validate_musicxml_root(root, source=source)
+
+
+def _validate_mxl(path: Path) -> None:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            bad_member = archive.testzip()
+            if bad_member is not None:
+                raise ScoreExportError(
+                    f"Compressed MusicXML has a corrupt member {bad_member!r}: {path}"
+                )
+
+            names = archive.namelist()
+            if names.count(MUSICXML_CONTAINER) != 1:
+                raise ScoreExportError(
+                    f"Compressed MusicXML must contain one {MUSICXML_CONTAINER}: {path}"
+                )
+            try:
+                container = ET.fromstring(archive.read(MUSICXML_CONTAINER))
+            except (ET.ParseError, LookupError) as exc:
+                raise ScoreExportError(f"Invalid MusicXML container in {path}: {exc}") from exc
+            if _local_name(container.tag) != "container":
+                raise ScoreExportError(f"Invalid MusicXML container root in {path}.")
+
+            rootfiles = [
+                element for element in container.iter() if _local_name(element.tag) == "rootfile"
+            ]
+            if not rootfiles:
+                raise ScoreExportError(f"MusicXML container has no <rootfile>: {path}")
+            root_path = rootfiles[0].get("full-path", "")
+            member_path = PurePosixPath(root_path)
+            if (
+                not root_path
+                or member_path.is_absolute()
+                or ".." in member_path.parts
+                or names.count(root_path) != 1
+            ):
+                raise ScoreExportError(
+                    f"MusicXML container references an invalid rootfile {root_path!r}: {path}"
+                )
+            _parse_musicxml(archive.read(root_path), source=path)
+    except ScoreExportError:
+        raise
+    except (
+        KeyError,
+        NotImplementedError,
+        OSError,
+        RuntimeError,
+        zipfile.BadZipFile,
+    ) as exc:
+        raise ScoreExportError(f"Incomplete or invalid compressed MusicXML {path}: {exc}") from exc
+
+
+def validate_score_file(
+    path: str | Path,
+    *,
+    expected_fingerprint: _FileFingerprint | None = None,
+) -> None:
+    """Validate one complete uncompressed or compressed MusicXML score."""
+
+    score = Path(path).expanduser().resolve()
+    if not score.is_file():
+        raise ScoreExportError(f"MusicXML export does not exist: {score}")
+
+    try:
+        before = score.stat()
+        if expected_fingerprint is not None and _fingerprint(before) != expected_fingerprint:
+            raise ScoreExportError(
+                f"MusicXML export changed before it could be validated: {score}"
+            )
+        if score.suffix.lower() == ".mxl":
+            _validate_mxl(score)
+        else:
+            _parse_musicxml(score.read_bytes(), source=score)
+        after = score.stat()
+    except OSError as exc:
+        raise ScoreExportError(f"Unable to read MusicXML export {score}: {exc}") from exc
+
+    if _fingerprint(before) != _fingerprint(after):
+        raise ScoreExportError(f"MusicXML export changed while it was being validated: {score}")
+
+
+def _score_file_candidates(
+    directory: Path,
+    *,
+    newer_than: float,
+) -> list[tuple[Path, _FileFingerprint]]:
+    candidates: list[tuple[int, str, Path, _FileFingerprint]] = []
+    for item in directory.rglob("*"):
+        if item.suffix.lower() not in SCORE_SUFFIXES:
+            continue
+        try:
+            item_stat = item.stat()
+        except OSError:
+            continue
+        if stat.S_ISREG(item_stat.st_mode) and item_stat.st_mtime >= newer_than:
+            candidates.append(
+                (item_stat.st_mtime_ns, str(item), item, _fingerprint(item_stat))
+            )
+    return [
+        (item, fingerprint)
+        for _, _, item, fingerprint in sorted(candidates, reverse=True)
+    ]
+
+
+def _score_file_snapshot(directory: Path) -> dict[Path, _FileFingerprint]:
+    return dict(_score_file_candidates(directory, newer_than=0))
 
 
 def newest_score_file(directory: Path, *, newer_than: float = 0) -> Path | None:
-    candidates = [
-        item
-        for item in directory.rglob("*")
-        if item.is_file() and item.suffix.lower() in SCORE_SUFFIXES and item.stat().st_mtime >= newer_than
-    ]
-    return max(candidates, key=lambda item: item.stat().st_mtime) if candidates else None
+    candidates = _score_file_candidates(directory, newer_than=newer_than)
+    return candidates[0][0] if candidates else None
 
 
 def wait_for_score_file(
@@ -26,18 +203,70 @@ def wait_for_score_file(
     newer_than: float = 0,
     timeout: float | None = None,
     poll_interval: float = 2,
+    stable_polls: int = 2,
+    baseline: Mapping[Path, _FileFingerprint] | None = None,
 ) -> Path:
-    """Wait for SmartScore (or a user) to export a MusicXML-family file."""
+    """Wait for a stable, structurally valid MusicXML-family export."""
 
     output_directory = Path(directory).expanduser().resolve()
+    if poll_interval <= 0:
+        raise ValueError("poll_interval must be greater than zero.")
+    if stable_polls < 2:
+        raise ValueError("stable_polls must be at least 2.")
+    if timeout is not None and timeout < 0:
+        raise ValueError("timeout cannot be negative.")
+
     started = time.monotonic()
+    observations: dict[Path, tuple[_FileFingerprint, int]] = {}
+    validation_errors: dict[Path, tuple[_FileFingerprint, str]] = {}
     while True:
-        match = newest_score_file(output_directory, newer_than=newer_than)
-        if match is not None:
+        candidates = [
+            (path, fingerprint)
+            for path, fingerprint in _score_file_candidates(
+                output_directory,
+                newer_than=newer_than,
+            )
+            if baseline is None or baseline.get(path) != fingerprint
+        ]
+        current_candidates = {path for path, _ in candidates}
+        observations = {
+            path: observation
+            for path, observation in observations.items()
+            if path in current_candidates
+        }
+        validation_errors = {
+            path: error for path, error in validation_errors.items() if path in current_candidates
+        }
+
+        for match, signature in candidates:
+            previous = observations.get(match)
+            unchanged_polls = previous[1] + 1 if previous and previous[0] == signature else 1
+            observations[match] = (signature, unchanged_polls)
+            if unchanged_polls < stable_polls:
+                continue
+
+            try:
+                validate_score_file(match, expected_fingerprint=signature)
+            except ScoreExportError as exc:
+                validation_errors[match] = (signature, str(exc))
+                continue
             return match
-        if timeout is not None and time.monotonic() - started >= timeout:
-            raise TimeoutError(f"No MusicXML file appeared in {output_directory} within {timeout}s.")
-        time.sleep(poll_interval)
+
+        elapsed = time.monotonic() - started
+        if timeout is not None and elapsed >= timeout:
+            detail = ""
+            if validation_errors:
+                newest_invalid = next(
+                    (path for path, _ in candidates if path in validation_errors),
+                    next(iter(validation_errors)),
+                )
+                detail = f" Last candidate was invalid: {validation_errors[newest_invalid][1]}"
+            raise TimeoutError(
+                f"No complete MusicXML file appeared in {output_directory} within {timeout}s."
+                f"{detail}"
+            )
+        remaining = timeout - elapsed if timeout is not None else poll_interval
+        time.sleep(min(poll_interval, remaining))
 
 
 def recognize_pdf_with_smartscore(
@@ -59,16 +288,15 @@ def recognize_pdf_with_smartscore(
     if not executable.is_file():
         raise FileNotFoundError(f"SmartScore executable does not exist: {executable}")
 
-    started_at = time.time()
+    baseline = _score_file_snapshot(destination_directory)
     subprocess.Popen([str(executable), str(source)])
     exported = wait_for_score_file(
         destination_directory,
-        newer_than=started_at,
         timeout=timeout,
+        baseline=baseline,
     )
     return convert_score(
         exported,
         destination_directory / f"{exported.stem}.mscz",
         musescore=musescore,
     )
-

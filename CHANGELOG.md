@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Made MuseScore conversions atomic so failed exports preserve existing destination files.
+- Wait for stable, structurally valid MusicXML/MXL before converting SmartScore exports.
 
 ## 0.1.0 - 2026-08-15
 
