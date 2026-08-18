@@ -43,6 +43,10 @@ KEY_SIGNATURES = {
     "C#": 7,
 }
 
+KEY_SIGNATURE_TO_SEMITONE = {
+    signature: KEY_TO_SEMITONE[key] for key, signature in KEY_SIGNATURES.items()
+}
+
 MIDI_TO_TPC_SHARP = {
     0: 14,
     1: 21,
@@ -114,9 +118,39 @@ def spelling_for_key(key: str) -> str:
     return "flat" if "b" in normalized or KEY_SIGNATURES.get(normalized, 0) < 0 else "sharp"
 
 
+def transpose_key_signature(signature: int, semitone_shift: int, spelling: str) -> int:
+    """Transpose a conventional key signature by a chromatic interval.
+
+    ``signature`` is MuseScore's number of flats (negative) or sharps
+    (positive). Enharmonic choices follow the requested accidental family.
+    """
+
+    try:
+        source_pitch_class = KEY_SIGNATURE_TO_SEMITONE[signature]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unsupported conventional key-signature value {signature}; expected -7..7."
+        ) from exc
+    if spelling not in {"flat", "sharp"}:
+        raise ValueError("Key-signature spelling must be 'flat' or 'sharp'.")
+
+    target_pitch_class = (source_pitch_class + semitone_shift) % 12
+    candidates = [
+        candidate_signature
+        for key, candidate_signature in KEY_SIGNATURES.items()
+        if KEY_TO_SEMITONE[key] == target_pitch_class
+    ]
+    preferred = [
+        candidate
+        for candidate in candidates
+        if (spelling == "flat" and candidate < 0)
+        or (spelling == "sharp" and candidate > 0)
+    ]
+    return min(preferred or candidates, key=abs)
+
+
 def tpc_for_pitch(midi_pitch: int, spelling: str) -> int:
     """Map a MIDI pitch to a MuseScore tonal pitch class."""
 
     mapping = MIDI_TO_TPC_FLAT if spelling == "flat" else MIDI_TO_TPC_SHARP
     return mapping[midi_pitch % 12]
-

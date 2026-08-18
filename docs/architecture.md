@@ -22,7 +22,12 @@ The engine parses the MSCX entry and only changes:
 
 - `Note/pitch`
 - `Note/tpc`
-- `KeySig/accidental`
+- `KeySig/concertKey` and `KeySig/actualKey` (MuseScore 4), or
+  `KeySig/accidental` (legacy scores)
+
+Each conventional key signature is shifted by the same interval as the notes,
+so mid-score key changes are retained instead of being flattened to one key.
+Custom key-signature definitions remain untouched.
 
 Other archive members are copied with their original `ZipInfo` metadata. This
 keeps images, styles, audio settings, view settings, and container metadata
@@ -33,4 +38,3 @@ outside the transformation boundary.
 An output archive is built in the destination directory, closed, and moved
 into place with `os.replace`. Validation failures remove the temporary file and
 leave any existing destination untouched.
-

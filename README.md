@@ -22,7 +22,8 @@ and regression tests against both original MSCZ samples.
 ## Features
 
 - Transpose every `.mscx` entry inside a MuseScore `.mscz` archive.
-- Update MIDI pitch, MuseScore TPC spelling, and conventional key signatures.
+- Update MIDI pitch, MuseScore TPC spelling, and both MuseScore 4 and legacy
+  conventional key signatures while preserving key changes within the score.
 - Preserve chords, rests, ties, rhythm, lyrics, layout files, thumbnails, and
   other archive members.
 - Abort before writing output when a transposition exceeds MIDI `0..127`.
@@ -72,6 +73,15 @@ Transpose and export a PDF through MuseScore:
 ```bash
 music-score transpose input.mscz output.mscz \
   --from-key Bb --to-key C --export-pdf output.pdf
+```
+
+`--from-key` and `--to-key` describe the score's written musical keys, not the
+instrument names. To rewrite concert-C music one whole step higher for a
+B-flat instrument, transpose the written key from C to D:
+
+```bash
+music-score transpose concert-c.mscz b-flat-part.mscz \
+  --from-key C --to-key D
 ```
 
 Convert MusicXML to PDF or MSCZ:
@@ -164,4 +174,3 @@ records.
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Original MIT
 and Apache-2.0 source provenance is documented in [MIGRATION.md](MIGRATION.md).
-

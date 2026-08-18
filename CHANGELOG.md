@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Made MuseScore conversions atomic so failed exports preserve existing destination files.
+- Transpose MuseScore 4 `concertKey` signatures by interval, including mid-score key changes.
 
 ## 0.1.0 - 2026-08-15
 
