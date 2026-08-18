@@ -77,6 +77,25 @@ MIDI_TO_TPC_FLAT = {
     11: 19,
 }
 
+NATURAL_KEY_TPC = {
+    "C": 14,
+    "D": 16,
+    "E": 18,
+    "F": 13,
+    "G": 15,
+    "A": 17,
+    "B": 19,
+}
+
+# MuseScore can read triple accidentals, but MuseScore 4's normal transpose
+# operation respells results to use at most double flats or double sharps.
+TPC_MIN = -8
+TPC_MAX = 40
+TRANSPOSED_TPC_MIN = -1
+TRANSPOSED_TPC_MAX = 33
+STEP_TO_NATURAL_TPC = (14, 16, 18, 13, 15, 17, 19)
+TPC_LINE_TO_STEP = (3, 0, 4, 1, 5, 2, 6)
+
 
 class KeyNameError(ValueError):
     """Raised when a key name cannot be normalized."""
@@ -98,6 +117,18 @@ def normalize_key(value: str) -> str:
     return normalized
 
 
+def normalize_conventional_key(value: str) -> str:
+    """Normalize a major key that MuseScore can express as a conventional signature."""
+
+    normalized = normalize_key(value)
+    if normalized not in KEY_SIGNATURES:
+        choices = ", ".join(KEY_SIGNATURES)
+        raise KeyNameError(
+            f"Unsupported conventional major key {value!r}. Expected one of: {choices}."
+        )
+    return normalized
+
+
 def calculate_shift(from_key: str, to_key: str) -> int:
     """Return the nearest signed semitone shift between two major keys."""
 
@@ -109,6 +140,74 @@ def calculate_shift(from_key: str, to_key: str) -> int:
     elif shift < -6:
         shift += 12
     return shift
+
+
+def tonic_tpc(key: str) -> int:
+    """Return MuseScore's tonal pitch class for a named tonic."""
+
+    normalized = normalize_key(key)
+    accidental_offset = 7 if "#" in normalized else -7 if "b" in normalized else 0
+    return NATURAL_KEY_TPC[normalized[0]] + accidental_offset
+
+
+def calculate_tpc_shift(from_key: str, to_key: str) -> int:
+    """Return the line-of-fifths spelling shift between two named keys."""
+
+    return tonic_tpc(to_key) - tonic_tpc(from_key)
+
+
+def transpose_tpc(tpc: int, tpc_shift: int) -> int:
+    """Transpose a MuseScore TPC while retaining its enharmonic intent.
+
+    MuseScore 4 accepts triple accidentals as input but its regular transpose
+    operation enharmonically respells output beyond double accidentals.
+    """
+
+    if not TPC_MIN <= tpc <= TPC_MAX:
+        raise ValueError(f"Invalid MuseScore TPC {tpc}; expected {TPC_MIN}..{TPC_MAX}.")
+    if tpc_shift == 0:
+        return tpc
+
+    semitone_shift = (tpc_shift * 7) % 12
+    if semitone_shift > 6 or (semitone_shift == 6 and tpc_shift < 0):
+        semitone_shift -= 12
+    diatonic_shift = (semitone_shift * 7 - tpc_shift) // 12
+    source_pitch_class = tpc_pitch_class(tpc)
+
+    for _ in range(10):
+        source_step = TPC_LINE_TO_STEP[(tpc - TPC_MIN) % 7]
+        target_step = (source_step + diatonic_shift) % 7
+        natural_tpc = STEP_TO_NATURAL_TPC[target_step]
+        natural_pitch_class = tpc_pitch_class(natural_tpc)
+        alteration = (semitone_shift - (natural_pitch_class - source_pitch_class)) % 12
+        if alteration > 6:
+            alteration -= 12
+        if alteration > 2:
+            diatonic_shift += 1
+        elif alteration < -2:
+            diatonic_shift -= 1
+        else:
+            updated = natural_tpc + alteration * 7
+            if not TRANSPOSED_TPC_MIN <= updated <= TRANSPOSED_TPC_MAX:
+                raise AssertionError(f"MuseScore TPC transposition produced {updated}.")
+            return updated
+    raise ValueError(f"MuseScore TPC shift {tpc_shift} did not converge.")
+
+
+def tpc_pitch_class(tpc: int) -> int:
+    """Return the chromatic pitch class represented by a MuseScore TPC."""
+
+    if not TPC_MIN <= tpc <= TPC_MAX:
+        raise ValueError(f"Invalid MuseScore TPC {tpc}; expected {TPC_MIN}..{TPC_MAX}.")
+    return (7 * (tpc - 14)) % 12
+
+
+def tpc_alteration(tpc: int) -> int:
+    """Return a MuseScore TPC's accidental value from triple-flat to triple-sharp."""
+
+    if not TPC_MIN <= tpc <= TPC_MAX:
+        raise ValueError(f"Invalid MuseScore TPC {tpc}; expected {TPC_MIN}..{TPC_MAX}.")
+    return ((tpc - TPC_MIN) // 7) - 3
 
 
 def spelling_for_key(key: str) -> str:

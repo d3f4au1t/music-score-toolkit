@@ -22,8 +22,9 @@ and regression tests against both original MSCZ samples.
 ## Features
 
 - Transpose every `.mscx` entry inside a MuseScore `.mscz` archive.
-- Update MIDI pitch, MuseScore TPC spelling, and both MuseScore 4 and legacy
-  conventional key signatures while preserving key changes within the score.
+- Update MIDI pitch, concert and written MuseScore TPC spelling, and both
+  MuseScore 4 and legacy conventional key signatures while preserving key
+  changes and source-note enharmonic intent.
 - Preserve chords, rests, ties, rhythm, lyrics, layout files, thumbnails, and
   other archive members.
 - Abort before writing output when a transposition exceeds MIDI `0..127`.
@@ -135,8 +136,11 @@ print(report.notes_changed)
 ## Reliability boundaries
 
 - Major keys in conventional sharp/flat notation are supported.
-- The target key determines default enharmonic spelling; explicit source-note
-  flat/sharp preferences are retained when present.
+- Note spelling follows the full named interval, so enharmonic distinctions
+  such as F-sharp versus G-flat survive transposition. Standard explicit
+  accidental metadata is retained and its glyph is updated when unambiguous.
+- For MuseScore 4 compatibility, spellings that would require more than a
+  double accidental are reduced to a readable enharmonic equivalent.
 - The toolkit changes score semantics conservatively, but it is not an
   engraving engine. Review complex notation in MuseScore after conversion.
 - Microtonal notation, custom key signatures, percussion staves, and unusual

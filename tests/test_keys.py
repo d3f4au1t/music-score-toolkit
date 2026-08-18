@@ -3,10 +3,15 @@ import pytest
 from music_score_toolkit.keys import (
     KeyNameError,
     calculate_shift,
+    calculate_tpc_shift,
+    normalize_conventional_key,
     normalize_key,
     spelling_for_key,
+    tonic_tpc,
+    tpc_alteration,
     tpc_for_pitch,
     transpose_key_signature,
+    transpose_tpc,
 )
 
 
@@ -23,6 +28,12 @@ def test_rejects_unknown_key():
         normalize_key("H")
 
 
+def test_conventional_key_validation_rejects_theoretical_signatures():
+    assert normalize_key("D#") == "D#"
+    with pytest.raises(KeyNameError):
+        normalize_conventional_key("D#")
+
+
 @pytest.mark.parametrize(
     ("source", "target", "expected"),
     [("Bb", "C", 2), ("C", "B", -1), ("F#", "C", -6), ("C", "Gb", 6)],
@@ -35,6 +46,21 @@ def test_target_key_controls_default_spelling():
     assert spelling_for_key("Eb") == "flat"
     assert spelling_for_key("E") == "sharp"
     assert tpc_for_pitch(61, "flat") != tpc_for_pitch(61, "sharp")
+
+
+def test_named_key_interval_controls_tpc_spelling():
+    assert tonic_tpc("Cb") == 7
+    assert calculate_tpc_shift("C", "D") == 2
+    assert calculate_tpc_shift("C#", "Db") == -12
+    assert transpose_tpc(20, 2) == 22  # F-sharp -> G-sharp
+    assert transpose_tpc(8, 2) == 10  # G-flat -> A-flat
+
+
+def test_tpc_transposition_respells_beyond_double_accidentals():
+    assert transpose_tpc(40, 7) == 23
+    assert tpc_alteration(23) == 1
+    assert transpose_tpc(-8, -15) == 25
+    assert transpose_tpc(40, 0) == 40
 
 
 def test_transposes_conventional_key_signatures_by_interval():
