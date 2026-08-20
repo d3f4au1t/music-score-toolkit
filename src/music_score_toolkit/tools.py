@@ -106,21 +106,20 @@ def convert_score(
 
     try:
         try:
-            subprocess.run(
+            completed = subprocess.run(
                 [str(executable), str(source), "-o", str(temporary_output)],
-                check=True,
+                check=False,
             )
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError(
-                f"MuseScore failed to convert {source} to {destination} "
-                f"(exit code {exc.returncode})."
-            ) from exc
         except OSError as exc:
             raise RuntimeError(f"Unable to run MuseScore executable {executable}: {exc}") from exc
 
-        if not temporary_output.is_file():
+        # MuseScore 4 often writes a complete file and then aborts while tearing
+        # down a headless session, so a created output decides success instead
+        # of the exit status. A missing or empty file is still a failure.
+        if not temporary_output.is_file() or temporary_output.stat().st_size == 0:
             raise RuntimeError(
-                f"MuseScore exited without creating the requested output: {destination}"
+                f"MuseScore exited without creating the requested output: {destination} "
+                f"(exit code {completed.returncode})."
             )
         os.replace(temporary_output, destination)
     finally:

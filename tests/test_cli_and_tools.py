@@ -60,16 +60,39 @@ def test_convert_score_publishes_output_atomically(monkeypatch, tmp_path: Path):
     executable.write_text("executable")
 
     def run_musescore(command, *, check):
-        assert check is True
+        assert check is False
         temporary_output = Path(command[-1])
         assert temporary_output != destination
         assert temporary_output.suffix == destination.suffix
         temporary_output.write_text("converted output")
+        return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr("music_score_toolkit.tools.subprocess.run", run_musescore)
 
     assert convert_score(source, destination, musescore=executable) == destination
     assert destination.read_text() == "converted output"
+    assert list(tmp_path.glob(".score.*.pdf")) == []
+
+
+def test_convert_score_accepts_output_written_before_a_crash_on_exit(monkeypatch, tmp_path: Path):
+    """MuseScore 4 can write a complete file and still abort while shutting down."""
+
+    source = tmp_path / "source.mscz"
+    destination = tmp_path / "score.pdf"
+    executable = tmp_path / "musescore"
+    source.write_text("score")
+    destination.write_text("previous output")
+    executable.write_text("executable")
+
+    def crash_after_writing_output(command, *, check):
+        assert check is False
+        Path(command[-1]).write_text("complete output")
+        return subprocess.CompletedProcess(command, -6)
+
+    monkeypatch.setattr("music_score_toolkit.tools.subprocess.run", crash_after_writing_output)
+
+    assert convert_score(source, destination, musescore=executable) == destination
+    assert destination.read_text() == "complete output"
     assert list(tmp_path.glob(".score.*.pdf")) == []
 
 
@@ -84,9 +107,9 @@ def test_convert_score_preserves_destination_and_cleans_partial_output(
     executable.write_text("executable")
 
     def fail_conversion(command, *, check):
-        assert check is True
-        Path(command[-1]).write_text("partial output")
-        raise subprocess.CalledProcessError(3, command)
+        assert check is False
+        Path(command[-1]).write_text("")
+        return subprocess.CompletedProcess(command, 3)
 
     monkeypatch.setattr("music_score_toolkit.tools.subprocess.run", fail_conversion)
 
@@ -105,7 +128,10 @@ def test_convert_score_rejects_missing_new_output(monkeypatch, tmp_path: Path):
     destination.write_text("previous output")
     executable.write_text("executable")
 
-    monkeypatch.setattr("music_score_toolkit.tools.subprocess.run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "music_score_toolkit.tools.subprocess.run",
+        lambda command, *, check: subprocess.CompletedProcess(command, 0),
+    )
 
     with pytest.raises(RuntimeError, match="without creating"):
         convert_score(source, destination, musescore=executable)
