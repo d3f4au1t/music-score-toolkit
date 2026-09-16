@@ -1,12 +1,15 @@
 import os
+import stat
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from music_score_toolkit import workflows
+from music_score_toolkit.tools import ExecutableNotFoundError
 from music_score_toolkit.workflows import (
     ScoreExportError,
+    recognize_pdf_with_smartscore,
     validate_score_file,
     wait_for_score_file,
 )
@@ -226,3 +229,38 @@ def test_timeout_explains_that_candidate_is_invalid(tmp_path: Path):
 
     with pytest.raises(TimeoutError, match="Last candidate was invalid"):
         wait_for_score_file(tmp_path, timeout=0.01, poll_interval=0.001)
+
+
+def test_recognize_rejects_nonexecutable_explicit_smartscore(tmp_path: Path):
+    source = tmp_path / "scan.pdf"
+    executable = tmp_path / "SmartScore"
+    source.write_bytes(b"%PDF")
+    executable.write_text("not executable")
+    executable.chmod(0o600)
+
+    with pytest.raises(ExecutableNotFoundError, match="is not executable"):
+        recognize_pdf_with_smartscore(
+            source,
+            tmp_path / "output",
+            smartscore=executable,
+        )
+
+
+def test_recognize_wraps_smartscore_launch_error(monkeypatch, tmp_path: Path):
+    source = tmp_path / "scan.pdf"
+    executable = tmp_path / "SmartScore"
+    source.write_bytes(b"%PDF")
+    executable.write_text("executable")
+    executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+
+    def deny_launch(*args, **kwargs):
+        raise PermissionError("launch denied")
+
+    monkeypatch.setattr(workflows.subprocess, "Popen", deny_launch)
+
+    with pytest.raises(RuntimeError, match="Unable to launch SmartScore.*launch denied"):
+        recognize_pdf_with_smartscore(
+            source,
+            tmp_path / "output",
+            smartscore=executable,
+        )

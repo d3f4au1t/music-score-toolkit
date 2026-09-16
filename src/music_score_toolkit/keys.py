@@ -248,6 +248,26 @@ def transpose_key_signature(signature: int, semitone_shift: int, spelling: str) 
     return min(preferred or candidates, key=abs)
 
 
+def transpose_key_signature_by_tpc(signature: int, tpc_shift: int) -> int:
+    """Transpose a conventional signature by a fully spelled interval.
+
+    Unlike :func:`transpose_key_signature`, this preserves the interval's
+    diatonic spelling for every key change in a score.  The result is folded
+    enharmonically into MuseScore's conventional ``-7..7`` signature range.
+    """
+
+    if not -7 <= signature <= 7:
+        raise ValueError(
+            f"Unsupported conventional key-signature value {signature}; expected -7..7."
+        )
+    tonic = transpose_tpc(14 + signature, tpc_shift)
+    while tonic < 7:
+        tonic += 12
+    while tonic > 21:
+        tonic -= 12
+    return tonic - 14
+
+
 def tpc_for_pitch(midi_pitch: int, spelling: str) -> int:
     """Map a MIDI pitch to a MuseScore tonal pitch class."""
 

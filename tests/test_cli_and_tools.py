@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 from music_score_toolkit.cli import main
-from music_score_toolkit.tools import ExecutableNotFoundError, convert_score, find_executable
+from music_score_toolkit.mscz import TransposeReport
+from music_score_toolkit.tools import (
+    ExecutableNotFoundError,
+    convert_score,
+    find_executable,
+    require_executable,
+)
 from music_score_toolkit.workflows import newest_score_file, wait_for_score_file
 
 VALID_PDF = b"%PDF-1.7\nstartxref\n0\n%%EOF\n"
@@ -68,6 +74,33 @@ def test_cli_reports_missing_input(capsys, tmp_path: Path):
     assert "does not exist" in capsys.readouterr().err
 
 
+def test_cli_can_explicitly_override_source_key_validation(monkeypatch, capsys):
+    captured = {}
+
+    def transpose(*args, **kwargs):
+        captured.update(kwargs)
+        return TransposeReport("Bb", "C", 2, 1, 1)
+
+    monkeypatch.setattr("music_score_toolkit.cli.transpose_mscz", transpose)
+
+    result = main(
+        [
+            "transpose",
+            "input.mscz",
+            "output.mscz",
+            "--from-key",
+            "Bb",
+            "--to-key",
+            "C",
+            "--ignore-source-key",
+        ]
+    )
+
+    assert result == 0
+    assert captured["validate_source_key"] is False
+    assert '"chord_symbols_changed": 0' in capsys.readouterr().out
+
+
 def test_configured_executable_is_respected(monkeypatch, tmp_path: Path):
     executable = tmp_path / "tool"
     make_executable(executable)
@@ -107,6 +140,14 @@ def test_nonexecutable_configured_executable_is_rejected(monkeypatch, tmp_path: 
             commands=(),
             known_paths=(),
         )
+
+
+def test_relative_explicit_executable_is_resolved_before_launch(monkeypatch, tmp_path: Path):
+    executable = tmp_path / "tool"
+    make_executable(executable)
+    monkeypatch.chdir(tmp_path)
+
+    assert require_executable("tool", label="Test tool") == executable.resolve()
 
 
 def test_convert_score_publishes_output_atomically(monkeypatch, tmp_path: Path):
@@ -152,6 +193,50 @@ def test_convert_score_accepts_output_written_before_a_crash_on_exit(monkeypatch
     assert convert_score(source, destination, musescore=executable) == destination
     assert destination.read_bytes() == VALID_PDF
     assert list(tmp_path.glob(".score.*.pdf")) == []
+
+
+def test_convert_score_rejects_valid_looking_output_from_regular_failure(
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "source.mscz"
+    destination = tmp_path / "score.pdf"
+    executable = tmp_path / "musescore"
+    source.write_text("score")
+    destination.write_text("previous output")
+    make_executable(executable)
+
+    def fail_after_writing_output(command, *, check):
+        assert check is False
+        write_valid_output(Path(command[-1]))
+        return subprocess.CompletedProcess(command, 3)
+
+    monkeypatch.setattr("music_score_toolkit.tools.subprocess.run", fail_after_writing_output)
+
+    with pytest.raises(RuntimeError, match="exit code 3.*not published"):
+        convert_score(source, destination, musescore=executable)
+
+    assert destination.read_text() == "previous output"
+
+
+def test_convert_score_preserves_existing_destination_mode(monkeypatch, tmp_path: Path):
+    source = tmp_path / "source.mscz"
+    destination = tmp_path / "score.pdf"
+    executable = tmp_path / "musescore"
+    source.write_text("score")
+    destination.write_text("previous output")
+    destination.chmod(0o604)
+    make_executable(executable)
+
+    def succeed(command, *, check):
+        write_valid_output(Path(command[-1]))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("music_score_toolkit.tools.subprocess.run", succeed)
+
+    convert_score(source, destination, musescore=executable)
+
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o604
 
 
 def test_convert_score_preserves_destination_and_cleans_partial_output(monkeypatch, tmp_path: Path):

@@ -40,7 +40,9 @@ def test_original_mscz_samples_transpose_successfully(fixture: str, tmp_path: Pa
         score_name = next(name for name in before.namelist() if name.endswith(".mscx"))
         original_score = ET.fromstring(before.read(score_name))
 
-    report = transpose_mscz(source, output, "Bb", "C")
+    # The archived samples begin in A major.  A -> B preserves the prototypes'
+    # intended whole-step interval while exercising source-key validation.
+    report = transpose_mscz(source, output, "A", "B")
 
     with zipfile.ZipFile(output) as after:
         assert set(after.namelist()) == original_entries

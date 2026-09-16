@@ -1,11 +1,12 @@
 # Music Score Toolkit
 
-[![CI](https://github.com/jzjzzzzzzz/music-score-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/jzjzzzzzzz/music-score-toolkit/actions/workflows/ci.yml)
+[![CI](https://github.com/d3f4au1t/music-score-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/d3f4au1t/music-score-toolkit/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 
-A safe, testable Python toolkit for transposing MuseScore MSCZ files and
-running explicit MuseScore/SmartScore conversion workflows.
+A loss-minimizing Python toolkit focused on reliable automatic transposition
+of MuseScore MSCZ files, plus explicit MuseScore/SmartScore conversion
+workflows.
 
 This repository consolidates the maintained functionality of
 [`auto-transpose`](https://github.com/jzjzzzzzzz/auto-transpose) and
@@ -25,8 +26,13 @@ and regression tests against both original MSCZ samples.
 - Update MIDI pitch, concert and written MuseScore TPC spelling, and both
   MuseScore 4 and legacy conventional key signatures while preserving key
   changes and source-note enharmonic intent.
+- Add a readable destination key signature when a C-major score omitted its
+  implicit initial signature, and transpose legacy and modern chord symbols.
+- Resolve each staff independently: pitched notation is transposed,
+  percussion mappings are preserved, and unsupported TAB/fret-diagram cases
+  stop safely instead of producing contradictory notation.
 - Preserve chords, rests, ties, rhythm, lyrics, layout files, thumbnails, and
-  other archive members.
+  other archive members, including archive comments and file permissions.
 - Abort before writing output when a transposition exceeds MIDI `0..127`.
 - Convert MusicXML, MSCZ, and other MuseScore-supported inputs through the
   MuseScore 4 CLI.
@@ -37,7 +43,7 @@ and regression tests against both original MSCZ samples.
 ## Installation
 
 ```bash
-git clone https://github.com/jzjzzzzzzz/music-score-toolkit.git
+git clone https://github.com/d3f4au1t/music-score-toolkit.git
 cd music-score-toolkit
 python3 -m venv .venv
 source .venv/bin/activate
@@ -65,7 +71,8 @@ The command prints a machine-readable report:
   "semitone_shift": 2,
   "notes_changed": 184,
   "key_signatures_changed": 1,
-  "score_entries_changed": 1
+  "score_entries_changed": 1,
+  "chord_symbols_changed": 12
 }
 ```
 
@@ -76,9 +83,14 @@ music-score transpose input.mscz output.mscz \
   --from-key Bb --to-key C --export-pdf output.pdf
 ```
 
-`--from-key` and `--to-key` describe the score's written musical keys, not the
-instrument names. To rewrite concert-C music one whole step higher for a
-B-flat instrument, transpose the written key from C to D:
+`--from-key` and `--to-key` describe musical keys, not instrument names. When
+the score has an unambiguous opening concert key, the command checks that it
+matches `--from-key` so a typo cannot silently transpose by the wrong interval.
+For an intentionally ambiguous or partial score, that check can be bypassed
+with `--ignore-source-key`.
+
+To rewrite concert-C music one whole step higher for a B-flat instrument,
+transpose from C to D:
 
 ```bash
 music-score transpose concert-c.mscz b-flat-part.mscz \
@@ -143,8 +155,14 @@ print(report.notes_changed)
   double accidental are reduced to a readable enharmonic equivalent.
 - The toolkit changes score semantics conservatively, but it is not an
   engraving engine. Review complex notation in MuseScore after conversion.
-- Microtonal notation, custom key signatures, percussion staves, and unusual
-  MuseScore extensions are not normalized automatically.
+- Percussion staves and atonal signatures are deliberately left untouched.
+  Custom key-signature definitions are preserved while their base key moves.
+- Microtonal accidental glyphs are preserved rather than guessed. Tablature,
+  fret diagrams, mid-score staff/instrument changes, and ambiguous
+  transposing-instrument key changes fail closed when direct XML editing could
+  make their visual and sounding representations disagree.
+- MSCZ members, CRCs, duplicate names, XML shape, and container references are
+  validated before output replaces an existing file.
 - PDF optical music recognition is delegated to SmartScore. For a dedicated
   Audiveris workflow, see
   [`PDFtoMSCZ`](https://github.com/jzjzzzzzzz/PDFtoMSCZ).

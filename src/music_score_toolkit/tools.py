@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
@@ -20,7 +22,6 @@ class ExecutableNotFoundError(FileNotFoundError):
 MUSESCORE_COMMANDS = ("mscore", "musescore", "MuseScore4")
 MUSESCORE_MAC_PATHS = ("/Applications/MuseScore 4.app/Contents/MacOS/mscore",)
 MUSESCORE_WINDOWS_PATHS = (
-    r"C:\Program Files\MuseScore 4\bin\MuseScore4.exe",
     r"C:\Program Files\MuseScore 4\bin\MuseScore4.exe",
 )
 
@@ -35,6 +36,10 @@ SMARTSCORE_WINDOWS_PATHS = (
 
 MUSICXML_ROOTS = {"score-partwise", "score-timewise"}
 MUSICXML_CONTAINER = "META-INF/container.xml"
+
+
+def _is_teardown_abort(returncode: int) -> bool:
+    return returncode in {-signal.SIGABRT, 128 + signal.SIGABRT}
 
 
 def _executable_problem(path: Path) -> str | None:
@@ -117,6 +122,9 @@ def _validate_zip(path: Path) -> list[str]:
         if bad_member is not None:
             raise ValueError(f"ZIP member {bad_member!r} failed its CRC check")
         names = archive.namelist()
+        duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
+        if duplicates:
+            raise ValueError(f"ZIP archive contains duplicate member {duplicates[0]!r}")
         if not any(not name.endswith("/") for name in names):
             raise ValueError("ZIP archive contains no files")
         return names
@@ -132,8 +140,13 @@ def _validate_mscz(path: Path) -> None:
             root = ET.fromstring(archive.read(score_name))
             if _local_name(root.tag) != "museScore":
                 raise ValueError(f"MSCX member {score_name!r} has an invalid root")
-            if not any(_local_name(element.tag) == "Score" for element in root):
-                raise ValueError(f"MSCX member {score_name!r} contains no <Score>")
+            direct_scores = [
+                element for element in root if _local_name(element.tag) == "Score"
+            ]
+            if len(direct_scores) != 1:
+                raise ValueError(
+                    f"MSCX member {score_name!r} must contain one direct <Score>"
+                )
 
 
 def _validate_mxl(path: Path) -> None:
@@ -167,8 +180,9 @@ def _validate_mscx(path: Path) -> None:
     root = ET.parse(path).getroot()
     if _local_name(root.tag) != "museScore":
         raise ValueError(f"expected a MuseScore document root, found <{_local_name(root.tag)}>")
-    if not any(_local_name(element.tag) == "Score" for element in root):
-        raise ValueError("MuseScore document contains no <Score>")
+    direct_scores = [element for element in root if _local_name(element.tag) == "Score"]
+    if len(direct_scores) != 1:
+        raise ValueError("MuseScore document must contain one direct <Score>")
 
 
 def _validate_generated_output(path: Path, *, size: int) -> bool:
@@ -201,7 +215,7 @@ def find_executable(
 ) -> Path:
     configured = os.environ.get(env_var)
     if configured:
-        candidate = Path(configured).expanduser()
+        candidate = Path(configured).expanduser().resolve()
         problem = _executable_problem(candidate)
         if problem is None:
             return candidate
@@ -211,11 +225,13 @@ def find_executable(
 
     for command in commands:
         discovered = shutil.which(command)
-        if discovered and _executable_problem(Path(discovered)) is None:
-            return Path(discovered)
+        if discovered:
+            candidate = Path(discovered).resolve()
+            if _executable_problem(candidate) is None:
+                return candidate
 
     for path in known_paths:
-        candidate = Path(path)
+        candidate = Path(path).expanduser().resolve()
         if _executable_problem(candidate) is None:
             return candidate
 
@@ -242,6 +258,18 @@ def find_smartscore() -> Path:
     )
 
 
+def require_executable(path: str | Path, *, label: str) -> Path:
+    """Return an explicit executable path or raise an actionable error."""
+
+    executable = Path(path).expanduser().resolve()
+    problem = _executable_problem(executable)
+    if problem is not None:
+        raise ExecutableNotFoundError(
+            f"{label} executable is unusable: {executable} {problem}"
+        )
+    return executable
+
+
 def convert_score(
     input_path: str | Path,
     output_path: str | Path,
@@ -260,12 +288,19 @@ def convert_score(
         raise RuntimeError(f"Unable to access input score {source}: {exc}") from exc
     if not stat.S_ISREG(source_stat.st_mode):
         raise FileNotFoundError(f"Input score does not exist: {source}")
-    executable = Path(musescore).expanduser() if musescore else find_musescore()
-    executable_problem = _executable_problem(executable)
-    if executable_problem is not None:
-        raise ExecutableNotFoundError(
-            f"MuseScore executable is unusable: {executable} {executable_problem}"
-        )
+    try:
+        destination_stat = destination.stat()
+    except FileNotFoundError:
+        output_mode = stat.S_IMODE(source_stat.st_mode)
+    except OSError as exc:
+        raise RuntimeError(f"Unable to inspect output path {destination}: {exc}") from exc
+    else:
+        output_mode = stat.S_IMODE(destination_stat.st_mode)
+    executable = (
+        require_executable(musescore, label="MuseScore")
+        if musescore
+        else find_musescore()
+    )
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -338,15 +373,18 @@ def convert_score(
                 f"output for {destination}: {exc} (exit code {completed.returncode})."
             ) from exc
 
-        # A valid known-format file can survive MuseScore's common teardown
-        # SIGABRT. For an unknown format, a nonzero status cannot be safely
-        # distinguished from a partial output.
-        if completed.returncode != 0 and not known_format:
+        # A valid known-format file can survive MuseScore's known teardown
+        # SIGABRT. Other failures can still leave plausible-looking partial
+        # output and must not be published.
+        if completed.returncode != 0 and (
+            not known_format or not _is_teardown_abort(completed.returncode)
+        ):
             raise RuntimeError(
                 f"MuseScore failed to convert {source} to {destination} "
-                f"(exit code {completed.returncode}); the output format cannot be validated."
+                f"(exit code {completed.returncode}); staged output was not published."
             )
         try:
+            os.chmod(temporary_output, output_mode)
             os.replace(temporary_output, destination)
         except OSError as exc:
             raise RuntimeError(f"Unable to publish converted score {destination}: {exc}") from exc

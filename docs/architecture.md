@@ -27,10 +27,14 @@ The engine parses the MSCX entry and only changes:
 - standard `Note/Accidental/subtype` when its displayed TPC is unambiguous
 - `KeySig/concertKey` and `KeySig/actualKey` (MuseScore 4), or
   `KeySig/accidental` (legacy scores)
+- legacy and modern `Harmony` root/bass TPC fields
 
 Each conventional key signature is shifted by the same interval as the notes,
 so mid-score key changes are retained instead of being flattened to one key.
-Custom key-signature definitions remain untouched.
+Missing initial C signatures are materialized when the destination needs a
+visible signature. Custom key-signature definitions remain structurally
+untouched while their conventional base key moves; atonal signatures and
+percussion staves remain unchanged.
 
 TPC values move along MuseScore's line-of-fifths representation instead of
 being regenerated from MIDI pitch alone. This preserves enharmonic intent,
@@ -43,8 +47,18 @@ Other archive members are copied with their original `ZipInfo` metadata. This
 keeps images, styles, audio settings, view settings, and container metadata
 outside the transformation boundary.
 
+Staff definitions are resolved independently inside the master score and each
+embedded score. Operations that need MuseScore's engraving engine—TAB
+refretting, fret-diagram regeneration, and mid-score instrument/staff-type
+changes—fail before output rather than leaving contradictory pitch data.
+
 ## Atomicity
 
 An output archive is built in the destination directory, closed, and moved
 into place with `os.replace`. Validation failures remove the temporary file and
 leave any existing destination untouched.
+
+Before publication, every ZIP member is CRC-checked, duplicate names and
+invalid MSCX/container structures are rejected, archive comments and output
+permissions are retained, and a semantic no-op copies the source byte for
+byte.

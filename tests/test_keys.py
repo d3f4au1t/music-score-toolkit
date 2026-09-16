@@ -11,6 +11,7 @@ from music_score_toolkit.keys import (
     tpc_alteration,
     tpc_for_pitch,
     transpose_key_signature,
+    transpose_key_signature_by_tpc,
     transpose_tpc,
 )
 
@@ -71,3 +72,8 @@ def test_transposes_conventional_key_signatures_by_interval():
 def test_key_signature_transposition_honors_enharmonic_spelling():
     assert transpose_key_signature(0, 6, "flat") == -6
     assert transpose_key_signature(0, 6, "sharp") == 6
+
+
+def test_spelled_interval_controls_each_key_signature_change():
+    assert transpose_key_signature_by_tpc(-7, 2) == -5  # C-flat -> D-flat
+    assert transpose_key_signature_by_tpc(7, -12) == -5  # C-sharp -> D-flat

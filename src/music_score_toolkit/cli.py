@@ -33,6 +33,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Clip pitches outside MIDI 0..127 instead of aborting.",
     )
     transpose.add_argument(
+        "--ignore-source-key",
+        action="store_true",
+        help="Skip checking --from-key against an unambiguous opening concert key.",
+    )
+    transpose.add_argument(
         "--export-pdf",
         type=Path,
         help="After transposition, ask MuseScore to create this PDF.",
@@ -62,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.from_key,
                 args.to_key,
                 strict_pitch_range=not args.allow_pitch_clipping,
+                validate_source_key=not args.ignore_source_key,
             )
             if args.export_pdf:
                 convert_score(args.output, args.export_pdf)
