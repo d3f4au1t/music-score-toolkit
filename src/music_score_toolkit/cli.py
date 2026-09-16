@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
                     timeout=args.timeout,
                 )
             )
-    except (FileNotFoundError, RuntimeError, ValueError, TimeoutError) as exc:
+    except (OSError, RuntimeError, ValueError, TimeoutError) as exc:
         print(f"music-score: error: {exc}", file=sys.stderr)
         return 2
     return 0
@@ -84,4 +84,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
