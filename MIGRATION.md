@@ -48,8 +48,9 @@ separate [`PDFtoMSCZ`](https://github.com/jzjzzzzzzz/PDFtoMSCZ) project.
 
 - Output is written atomically instead of directly to the destination.
 - Unsupported keys and malformed pitches produce actionable errors.
+- An unambiguous opening concert key must match `--from-key`; use
+  `--ignore-source-key` only for deliberately partial or ambiguous scores.
 - Out-of-range MIDI values abort by default instead of being silently clipped.
 - Optional desktop dependencies are configured through environment variables
   or discovered on common platforms.
 - Machine-readable reports replace informal `print` statements.
-

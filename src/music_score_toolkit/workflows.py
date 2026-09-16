@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from .tools import convert_score, find_smartscore
+from .tools import convert_score, find_smartscore, require_executable
 
 SCORE_SUFFIXES = (".mxl", ".musicxml", ".xml")
 MUSICXML_ROOTS = {"score-partwise", "score-timewise"}
@@ -283,13 +283,25 @@ def recognize_pdf_with_smartscore(
     destination_directory = Path(output_directory).expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(f"Input PDF does not exist: {source}")
-    destination_directory.mkdir(parents=True, exist_ok=True)
-    executable = Path(smartscore).expanduser() if smartscore else find_smartscore()
-    if not executable.is_file():
-        raise FileNotFoundError(f"SmartScore executable does not exist: {executable}")
+    try:
+        destination_directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Unable to create output directory {destination_directory}: {exc}"
+        ) from exc
+    executable = (
+        require_executable(smartscore, label="SmartScore")
+        if smartscore
+        else find_smartscore()
+    )
 
     baseline = _score_file_snapshot(destination_directory)
-    subprocess.Popen([str(executable), str(source)])
+    try:
+        subprocess.Popen([str(executable), str(source)])
+    except OSError as exc:
+        raise RuntimeError(
+            f"Unable to launch SmartScore executable {executable}: {exc}"
+        ) from exc
     exported = wait_for_score_file(
         destination_directory,
         timeout=timeout,
