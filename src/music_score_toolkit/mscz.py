@@ -182,15 +182,20 @@ def _transpose_accidental_subtype(
 
 
 def _concert_pitch_setting(root: ET.Element) -> bool | None:
-    field = root.find("./Style/concertPitch")
-    if field is None or field.text is None:
+    fields = root.findall("./Style/concertPitch")
+    if len(fields) > 1:
+        raise ScoreFormatError("Duplicate MuseScore concertPitch style fields.")
+    if not fields:
         return None
+    field = fields[0]
+    if field.text is None:
+        raise ScoreFormatError("Invalid MuseScore concertPitch value: missing text")
     value = field.text.strip().lower()
     if value in {"1", "true"}:
         return True
     if value in {"0", "false"}:
         return False
-    return None
+    raise ScoreFormatError(f"Invalid MuseScore concertPitch value: {field.text!r}")
 
 
 def _parse_mscx(content: bytes | str) -> ET.Element:
@@ -1042,16 +1047,26 @@ def _archive_concert_pitch_setting(
     archive: zipfile.ZipFile,
     infos: list[zipfile.ZipInfo],
 ) -> bool | None:
-    for info in infos:
-        if PurePosixPath(info.filename).name.lower() != "score_style.mss":
-            continue
-        payload = _read_archive_member(archive, info)
-        try:
-            style_root = ET.fromstring(payload)
-        except (ET.ParseError, LookupError, ValueError):
-            return None
-        return _concert_pitch_setting(style_root)
-    return None
+    style_infos = [
+        info
+        for info in infos
+        if not info.is_dir() and info.filename.lower() == "score_style.mss"
+    ]
+    if not style_infos:
+        return None
+    if len(style_infos) > 1:
+        raise ScoreFormatError("MSCZ archive contains ambiguous score_style.mss members.")
+
+    payload = _read_archive_member(archive, style_infos[0])
+    try:
+        style_root = ET.fromstring(payload)
+    except (ET.ParseError, LookupError, ValueError) as exc:
+        raise ScoreFormatError(f"Invalid MSCZ score_style.mss XML: {exc}") from exc
+    if style_root.tag != "museScore":
+        raise ScoreFormatError(
+            "Invalid MSCZ score_style.mss XML: root element must be <museScore>."
+        )
+    return _concert_pitch_setting(style_root)
 
 
 def _validate_mscz_manifest(

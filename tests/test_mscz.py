@@ -196,6 +196,17 @@ def test_inline_concert_pitch_style_controls_ambiguous_accidental():
     assert ET.fromstring(rendered).findtext(".//Accidental/subtype") == "accidentalSharp"
 
 
+@pytest.mark.parametrize("value", ["", "yes", "2"])
+def test_invalid_inline_concert_pitch_style_is_rejected(value: str):
+    xml = f"""<museScore><Score>
+    <Style><concertPitch>{value}</concertPitch></Style>
+    <Note><pitch>60</pitch><tpc>14</tpc></Note>
+    </Score></museScore>"""
+
+    with pytest.raises(ScoreFormatError, match="concertPitch"):
+        transpose_mscx(xml, "C", "D")
+
+
 def test_true_no_op_is_byte_identical_and_preserves_enharmonic_spelling():
     xml = b"""<museScore><Score><Note>
     <Accidental><subtype>accidentalFlat</subtype><eid>A</eid></Accidental>
@@ -345,6 +356,40 @@ def test_archive_style_controls_written_or_concert_accidental(tmp_path: Path):
         root = ET.fromstring(archive.read("score.mscx"))
     assert root.findtext(".//Accidental/subtype") == "accidentalSharp"
     assert report.score_entries_changed == 1
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        b"not XML",
+        b"<Style><concertPitch>1</concertPitch></Style>",
+        b"<museScore><Style><concertPitch>maybe</concertPitch></Style></museScore>",
+    ],
+)
+def test_invalid_archive_style_is_rejected_atomically(tmp_path: Path, style: bytes):
+    source = tmp_path / "source.mscz"
+    output = tmp_path / "out.mscz"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("score.mscx", SCORE_XML)
+        archive.writestr("score_style.mss", style)
+    output.write_bytes(b"existing-output")
+
+    with pytest.raises(ScoreFormatError, match="score_style|concertPitch"):
+        transpose_mscz(source, output, "Bb", "C")
+
+    assert output.read_bytes() == b"existing-output"
+
+
+def test_case_variant_archive_styles_are_rejected_as_ambiguous(tmp_path: Path):
+    source = tmp_path / "source.mscz"
+    style = b"<museScore><Style><concertPitch>1</concertPitch></Style></museScore>"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("score.mscx", SCORE_XML)
+        archive.writestr("score_style.mss", style)
+        archive.writestr("SCORE_STYLE.MSS", style)
+
+    with pytest.raises(ScoreFormatError, match="ambiguous score_style"):
+        transpose_mscz(source, tmp_path / "out.mscz", "Bb", "C")
 
 
 def test_score_transposition_rejects_theoretical_key_signature_names():
