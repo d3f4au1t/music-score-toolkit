@@ -676,6 +676,19 @@ def test_rejects_non_mscx_xml_shapes(xml: bytes):
         transpose_mscx(xml, "C", "D")
 
 
+def test_nested_score_is_transposed_once_not_again_through_outer_staff():
+    xml = b"""<museScore><Score><Staff><Measure><Score>
+    <Note><pitch>60</pitch><tpc>14</tpc></Note>
+    </Score></Measure></Staff></Score></museScore>"""
+
+    rendered, report = transpose_mscx(xml, "C", "D")
+    note = ET.fromstring(rendered).find(".//Note")
+
+    assert note.findtext("pitch") == "62"
+    assert note.findtext("tpc") == "16"
+    assert report.notes_changed == 1
+
+
 def test_preserves_comments_and_processing_instructions_inside_score():
     xml = b"""<?xml version="1.0"?>
     <museScore><!--keep-comment--><Score><?proof keep?>

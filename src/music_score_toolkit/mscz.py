@@ -9,6 +9,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -96,6 +97,8 @@ _ALTERATION_TO_LEGACY_ACCIDENTAL = {
     1: "sharp",
     2: "double sharp",
 }
+
+_SCORE_BOUNDARIES = frozenset({"Part", "Staff", "Score"})
 
 
 def _read_tpc(note: ET.Element, field_name: str) -> tuple[ET.Element | None, int | None]:
@@ -345,19 +348,28 @@ def _staff_scopes(score: ET.Element) -> list[_StaffScope]:
     return scopes
 
 
+def _bounded_descendants(
+    parent: ET.Element,
+    *,
+    boundaries: frozenset[str] = _SCORE_BOUNDARIES,
+) -> Iterator[ET.Element]:
+    """Yield descendants without crossing into another score/staff context."""
+
+    stack = list(reversed(parent))
+    while stack:
+        element = stack.pop()
+        if element.tag in boundaries:
+            continue
+        yield element
+        stack.extend(reversed(element))
+
+
+def _bounded_elements(parent: ET.Element, tag: str) -> list[ET.Element]:
+    return [element for element in _bounded_descendants(parent) if element.tag == tag]
+
+
 def _unscoped_elements(score: ET.Element, tag: str) -> list[ET.Element]:
-    matches: list[ET.Element] = []
-
-    def visit(parent: ET.Element) -> None:
-        for child in parent:
-            if child.tag in {"Part", "Staff", "Score"}:
-                continue
-            if child.tag == tag:
-                matches.append(child)
-            visit(child)
-
-    visit(score)
-    return matches
+    return _bounded_elements(score, tag)
 
 
 def _first_measure(staff: ET.Element) -> ET.Element | None:
@@ -366,9 +378,7 @@ def _first_measure(staff: ET.Element) -> ET.Element | None:
 
 def _opening_key_signature(measure: ET.Element) -> ET.Element | None:
     music_has_started = False
-    for element in measure.iter():
-        if element is measure:
-            continue
+    for element in _bounded_descendants(measure):
         if element.tag == "KeySig":
             return None if music_has_started else element
         if element.tag in {"Chord", "Rest", "Note"}:
@@ -820,15 +830,15 @@ def _validate_score_context(
         return scopes
 
     for scope in scopes:
-        if next(scope.content.iter("InstrumentChange"), None) is not None:
+        if _bounded_elements(scope.content, "InstrumentChange"):
             raise ScoreFormatError(
                 "Scores with mid-score instrument changes cannot be transposed safely yet."
             )
-        if next(scope.content.iter("StaffTypeChange"), None) is not None:
+        if _bounded_elements(scope.content, "StaffTypeChange"):
             raise ScoreFormatError(
                 "Scores with mid-score staff-type changes cannot be transposed safely yet."
             )
-        for staff_state in scope.content.iter("StaffState"):
+        for staff_state in _bounded_elements(scope.content, "StaffState"):
             subtype = staff_state.findtext("subtype", "").strip().lower()
             if subtype == "instrument" or staff_state.find(".//Instrument") is not None:
                 raise ScoreFormatError(
@@ -836,8 +846,8 @@ def _validate_score_context(
                     "transposed safely yet."
                 )
         has_content = (
-            next(scope.content.iter("Note"), None) is not None
-            or next(scope.content.iter("Harmony"), None) is not None
+            bool(_bounded_elements(scope.content, "Note"))
+            or bool(_bounded_elements(scope.content, "Harmony"))
         )
         if scope.group == "tablature" and has_content:
             raise ScoreFormatError(
@@ -850,14 +860,14 @@ def _validate_score_context(
             )
         if scope.group == "pitched" and any(
             note.find("fret") is not None or note.find("string") is not None
-            for note in scope.content.iter("Note")
+            for note in _bounded_elements(scope.content, "Note")
         ):
             raise ScoreFormatError(
                 "Fretted notes require chord-aware refretting and cannot be transposed "
                 "safely; no output was written."
             )
         if scope.group == "pitched" and _instrument_tpc_shift(scope.instrument):
-            key_signatures = list(scope.content.iter("KeySig"))
+            key_signatures = _bounded_elements(scope.content, "KeySig")
             if len(key_signatures) > 1 and has_content:
                 raise ScoreFormatError(
                     "Transposing-instrument staves with mid-score key changes require "
@@ -865,7 +875,7 @@ def _validate_score_context(
                 )
         if (
             scope.group == "pitched"
-            and next(scope.content.iter("FretDiagram"), None) is not None
+            and _bounded_elements(scope.content, "FretDiagram")
         ):
             raise ScoreFormatError(
                 "Fret diagrams cannot be regenerated safely during direct XML transposition; "
@@ -947,7 +957,7 @@ def transpose_mscx(
                 note_tpc_shift,
                 context_concert_pitch,
             )
-            for note in scope.content.iter("Note"):
+            for note in _bounded_elements(scope.content, "Note"):
                 if _transpose_note(
                     note,
                     shift,
@@ -960,13 +970,13 @@ def transpose_mscx(
                     has_instrument_transposition=has_instrument_transposition,
                 ):
                     note_count += 1
-            for harmony in scope.content.iter("Harmony"):
+            for harmony in _bounded_elements(scope.content, "Harmony"):
                 harmony_shift = note_tpc_shift
                 if not context_concert_pitch:
                     harmony_shift += written_adjustment
                 if _transpose_harmony(harmony, harmony_shift):
                     harmony_count += 1
-            for key_signature in scope.content.iter("KeySig"):
+            for key_signature in _bounded_elements(scope.content, "KeySig"):
                 if _transpose_key_signature(
                     key_signature,
                     note_tpc_shift,
