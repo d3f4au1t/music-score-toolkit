@@ -617,6 +617,12 @@ def _transpose_note(
                 "transposition; no output was written."
             )
 
+    # An exact named-key no-op is also an exact document no-op. Validation
+    # above still runs, but existing enharmonic choices and absent optional
+    # tpc2 fields must not be normalized merely by inspecting the score.
+    if semitone_shift == 0 and tpc_shift == 0:
+        return False
+
     updated = current + semitone_shift
     was_clipped = False
     if not 0 <= updated <= 127:

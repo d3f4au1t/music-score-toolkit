@@ -498,6 +498,24 @@ def test_adds_missing_written_tpc_for_transposing_instrument():
     assert ET.fromstring(rendered).findtext(".//Note/tpc2") == "18"
 
 
+def test_exact_no_op_does_not_add_or_respell_written_tpc():
+    xml = b"""<museScore><Score>
+      <Part><Staff id="1"><StaffType group="pitched"/></Staff><Instrument>
+        <transposeDiatonic>-1</transposeDiatonic><transposeChromatic>-2</transposeChromatic>
+      </Instrument></Part>
+      <Staff id="1"><Measure><KeySig><concertKey>0</concertKey><actualKey>2</actualKey>
+        </KeySig><Note><pitch>60</pitch><tpc>14</tpc></Note>
+        <Note><pitch>61</pitch><tpc>21</tpc><tpc2>23</tpc2></Note>
+      </Measure></Staff>
+    </Score></museScore>"""
+
+    rendered, report = transpose_mscx(xml, "C", "C")
+
+    assert rendered == xml
+    assert report.notes_changed == 0
+    assert report.score_entries_changed == 0
+
+
 def test_b_flat_staff_recomputes_enharmonic_written_notes_and_harmony():
     xml = b"""<museScore><Score>
       <Part><Staff id="1"><StaffType group="pitched"/></Staff><Instrument>
