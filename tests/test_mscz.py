@@ -198,6 +198,20 @@ def test_inline_concert_pitch_style_controls_ambiguous_accidental():
     assert ET.fromstring(rendered).findtext(".//Accidental/subtype") == "accidentalSharp"
 
 
+def test_nested_score_inherits_outer_concert_pitch_style():
+    xml = b"""<museScore><Score>
+    <Style><concertPitch>1</concertPitch></Style>
+    <Excerpt><Score><Note>
+      <Accidental><subtype>accidentalSharp</subtype></Accidental>
+      <pitch>61</pitch><tpc>21</tpc><tpc2>23</tpc2>
+    </Note></Score></Excerpt>
+    </Score></museScore>"""
+
+    rendered, _ = transpose_mscx(xml, "C", "B")
+
+    assert ET.fromstring(rendered).findtext(".//Accidental/subtype") == "accidentalSharp"
+
+
 @pytest.mark.parametrize("value", ["", "yes", "2"])
 def test_invalid_inline_concert_pitch_style_is_rejected(value: str):
     xml = f"""<museScore><Score>
@@ -677,6 +691,20 @@ def test_source_key_mismatch_is_actionable_and_can_be_explicitly_overridden():
     assert ET.fromstring(rendered).findtext(".//concertKey") == "2"
 
 
+def test_unscoped_later_key_change_is_not_mistaken_for_opening_key():
+    xml = b"""<museScore><Score>
+    <Note><pitch>60</pitch><tpc>14</tpc></Note>
+    <KeySig><concertKey>1</concertKey></KeySig>
+    </Score></museScore>"""
+
+    rendered, report = transpose_mscx(xml, "C", "D")
+    root = ET.fromstring(rendered)
+
+    assert root.findtext(".//pitch") == "62"
+    assert root.findtext(".//concertKey") == "3"
+    assert report.key_signatures_changed == 1
+
+
 @pytest.mark.parametrize(
     "xml",
     [
@@ -702,6 +730,20 @@ def test_nested_score_is_transposed_once_not_again_through_outer_staff():
     assert note.findtext("pitch") == "62"
     assert note.findtext("tpc") == "16"
     assert report.notes_changed == 1
+
+
+def test_nested_score_harmony_is_not_transposed_through_outer_harmony():
+    xml = b"""<museScore><Score><Staff><Measure>
+    <Harmony><root>14</root><Score>
+      <Harmony><root>14</root></Harmony>
+    </Score></Harmony>
+    </Measure></Staff></Score></museScore>"""
+
+    rendered, report = transpose_mscx(xml, "C", "D")
+    roots = [int(element.text) for element in ET.fromstring(rendered).iter("root")]
+
+    assert roots == [16, 16]
+    assert report.chord_symbols_changed == 2
 
 
 def test_preserves_comments_and_processing_instructions_inside_score():

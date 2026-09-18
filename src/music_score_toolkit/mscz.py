@@ -224,6 +224,26 @@ def _concert_pitch_setting(root: ET.Element) -> bool | None:
     raise ScoreFormatError(f"Invalid MuseScore concertPitch value: {field.text!r}")
 
 
+def _score_contexts(
+    root: ET.Element,
+    fallback_concert_pitch: bool | None,
+) -> list[tuple[ET.Element, bool | None]]:
+    """Return each Score with its inherited concert/written-pitch view."""
+
+    contexts: list[tuple[ET.Element, bool | None]] = []
+    stack = [(child, fallback_concert_pitch) for child in reversed(root)]
+    while stack:
+        element, inherited_setting = stack.pop()
+        context_setting = inherited_setting
+        if element.tag == "Score":
+            explicit_setting = _concert_pitch_setting(element)
+            if explicit_setting is not None:
+                context_setting = explicit_setting
+            contexts.append((element, context_setting))
+        stack.extend((child, context_setting) for child in reversed(element))
+    return contexts
+
+
 def _parse_mscx(content: bytes | str) -> ET.Element:
     try:
         parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
@@ -757,7 +777,10 @@ def _written_tpc_adjustment(
 def _transpose_harmony(harmony: ET.Element, tpc_shift: int) -> bool:
     changed = False
     for field_name in ("root", "base", "bass"):
-        for field in harmony.iter(field_name):
+        boundaries = _SCORE_BOUNDARIES | {"Harmony"}
+        for field in _bounded_descendants(harmony, boundaries=boundaries):
+            if field.tag != field_name:
+                continue
             if field.text is None:
                 raise ScoreFormatError(
                     f"Invalid MuseScore Harmony {field_name} value: missing text"
@@ -783,9 +806,17 @@ def _transpose_harmony(harmony: ET.Element, tpc_shift: int) -> bool:
 
 
 def _opening_unscoped_key(score: ET.Element) -> int | None:
-    key_signatures = _unscoped_elements(score, "KeySig")
-    if key_signatures:
-        key_signature = key_signatures[0]
+    key_signature = None
+    music_has_started = False
+    for element in _bounded_descendants(score):
+        if element.tag == "KeySig":
+            if not music_has_started:
+                key_signature = element
+            break
+        if element.tag in {"Chord", "Rest", "Note"}:
+            music_has_started = True
+
+    if key_signature is not None:
         if _key_signature_kind(key_signature) == "atonal":
             return None
         for field_name in ("concertKey", "actualKey", "accidental"):
@@ -800,21 +831,17 @@ def _opening_unscoped_key(score: ET.Element) -> int | None:
                 ) from exc
             return value
         raise ScoreFormatError("Conventional MuseScore KeySig has no key value.")
-    if _unscoped_elements(score, "Note") or _unscoped_elements(score, "Measure"):
+    if music_has_started or _unscoped_elements(score, "Measure"):
         return 0
     return None
 
 
 def _validate_source_key(
-    score_contexts: list[ET.Element],
+    score_contexts: list[tuple[ET.Element, bool | None]],
     source_key: str,
-    fallback_concert_pitch: bool | None = None,
 ) -> None:
     observed: list[int] = []
-    for score in score_contexts:
-        context_concert_pitch = _concert_pitch_setting(score)
-        if context_concert_pitch is None:
-            context_concert_pitch = fallback_concert_pitch
+    for score, context_concert_pitch in score_contexts:
         scopes = _staff_scopes(score)
         for scope in scopes:
             if scope.group != "pitched":
@@ -950,31 +977,28 @@ def transpose_mscx(
     shift = calculate_shift(source_key, target_key)
     note_tpc_shift = calculate_tpc_shift(source_key, target_key)
     root = _parse_mscx(content)
-    score_contexts = list(root.iter("Score"))
+    score_contexts = _score_contexts(root, concert_pitch)
     if validate_source_key:
-        _validate_source_key(score_contexts, source_key, concert_pitch)
+        _validate_source_key(score_contexts, source_key)
 
     transposition_changes_spelling = bool(shift or note_tpc_shift)
     scoped_contexts = [
         (
             score,
+            context_concert_pitch,
             _validate_score_context(
                 score,
                 transposition_changes_spelling=transposition_changes_spelling,
             ),
         )
-        for score in score_contexts
+        for score, context_concert_pitch in score_contexts
     ]
 
     note_count = 0
     key_signature_count = 0
     harmony_count = 0
     target_spelling = spelling_for_key(target_key)
-    for score, scopes in scoped_contexts:
-        context_concert_pitch = _concert_pitch_setting(score)
-        if context_concert_pitch is None:
-            context_concert_pitch = concert_pitch
-
+    for score, context_concert_pitch, scopes in scoped_contexts:
         for scope in scopes:
             if scope.group != "pitched":
                 continue
