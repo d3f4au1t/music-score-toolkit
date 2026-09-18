@@ -459,6 +459,19 @@ def test_staff_aware_transposition_skips_percussion_and_updates_harmony():
     assert report.chord_symbols_changed == 2
 
 
+def test_explicit_staff_id_must_match_its_instrument_definition():
+    xml = b"""<museScore><Score>
+      <Part><Staff id="1"><StaffType group="percussion"/></Staff>
+        <Instrument><useDrumset>1</useDrumset></Instrument></Part>
+      <Staff id="99"><Measure>
+        <Note><pitch>60</pitch><tpc>14</tpc></Note>
+      </Measure></Staff>
+    </Score></museScore>"""
+
+    with pytest.raises(ScoreFormatError, match="staff id '99'.*no matching"):
+        transpose_mscx(xml, "C", "D")
+
+
 def test_adds_missing_initial_key_signature_and_recomputes_written_pitch():
     xml = b"""<museScore><Score>
       <Part><Staff id="1"><StaffType group="pitched"/></Staff><Instrument>

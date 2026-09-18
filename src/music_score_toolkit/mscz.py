@@ -328,8 +328,14 @@ def _staff_scopes(score: ET.Element) -> list[_StaffScope]:
 
     scopes: list[_StaffScope] = []
     for index, content in enumerate(content_staves):
-        match = definitions_by_id.get(content.get("id", ""))
-        if match is None and index < len(definitions):
+        content_id = content.get("id")
+        match = definitions_by_id.get(content_id or "")
+        if content_id is not None and definitions and match is None:
+            raise ScoreFormatError(
+                f"Invalid MSCX XML: score staff id {content_id!r} has no matching "
+                "staff definition."
+            )
+        if match is None and content_id is None and index < len(definitions):
             _, definition, instrument, preference = definitions[index]
         elif match is None:
             definition = content
