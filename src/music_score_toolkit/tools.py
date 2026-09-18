@@ -309,23 +309,19 @@ def convert_score(
         ) from exc
 
     try:
-        descriptor, temporary_name = tempfile.mkstemp(
-            dir=destination.parent,
-            prefix=f".{destination.stem}.",
-            suffix=destination.suffix,
+        staging_directory = Path(
+            tempfile.mkdtemp(
+                dir=destination.parent,
+                prefix=f".{destination.stem}.",
+            )
         )
     except OSError as exc:
         raise RuntimeError(f"Unable to stage output beside {destination}: {exc}") from exc
-    temporary_output = Path(temporary_name)
-    try:
-        os.close(descriptor)
-        temporary_output.unlink()
-    except OSError as exc:
-        try:
-            temporary_output.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise RuntimeError(f"Unable to prepare staged output {temporary_output}: {exc}") from exc
+
+    # MuseScore treats a hidden MSCX filename as an unpack directory instead
+    # of a score export. Keep the basename visible and isolate any sidecars it
+    # creates so the destination directory stays clean.
+    temporary_output = staging_directory / f"output{destination.suffix}"
 
     try:
         try:
@@ -389,9 +385,6 @@ def convert_score(
         except OSError as exc:
             raise RuntimeError(f"Unable to publish converted score {destination}: {exc}") from exc
     finally:
-        try:
-            temporary_output.unlink(missing_ok=True)
-        except OSError:
-            # Best-effort cleanup must not mask the conversion or publication error.
-            pass
+        # Best-effort cleanup must not mask the conversion or publication error.
+        shutil.rmtree(staging_directory, ignore_errors=True)
     return destination
