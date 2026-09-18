@@ -1,4 +1,6 @@
+import os
 import stat
+import struct
 import warnings
 import xml.etree.ElementTree as ET
 import zipfile
@@ -388,7 +390,7 @@ def test_case_variant_archive_styles_are_rejected_as_ambiguous(tmp_path: Path):
         archive.writestr("score_style.mss", style)
         archive.writestr("SCORE_STYLE.MSS", style)
 
-    with pytest.raises(ScoreFormatError, match="ambiguous score_style"):
+    with pytest.raises(ScoreFormatError, match="colliding member|ambiguous score_style"):
         transpose_mscz(source, tmp_path / "out.mscz", "Bb", "C")
 
 
@@ -878,7 +880,7 @@ def test_corrupt_archive_member_is_wrapped_and_destination_is_preserved(tmp_path
     source.write_bytes(raw)
     output.write_bytes(b"existing")
 
-    with pytest.raises(ScoreFormatError, match="corrupt member|validate MSCZ"):
+    with pytest.raises(ScoreFormatError, match="read or validate"):
         transpose_mscz(source, output, "Bb", "C")
 
     assert output.read_bytes() == b"existing"
@@ -949,3 +951,215 @@ def test_malformed_container_manifest_is_rejected_atomically(tmp_path: Path):
         transpose_mscz(source, output, "Bb", "C")
 
     assert output.read_bytes() == b"existing"
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        b'<container><rootfile full-path="score.mscx"/></container>',
+        b'<container><junk><rootfile full-path="score.mscx"/></junk></container>',
+        b"""<container><rootfiles/><junk>
+        <rootfile full-path="score.mscx"/></junk></container>""",
+        b"""<container><rootfiles>
+        <rootfile full-path="score.mscx"/><rootfile full-path="score.mscx"/>
+        </rootfiles></container>""",
+    ],
+)
+def test_container_manifest_requires_direct_rootfiles_structure(
+    tmp_path: Path,
+    manifest: bytes,
+):
+    source = tmp_path / "source.mscz"
+    output = tmp_path / "out.mscz"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("score.mscx", SCORE_XML)
+        archive.writestr("META-INF/container.xml", manifest)
+    output.write_bytes(b"existing")
+
+    with pytest.raises(ScoreFormatError, match="container manifest"):
+        transpose_mscz(source, output, "Bb", "C")
+
+    assert output.read_bytes() == b"existing"
+
+
+@pytest.mark.parametrize(
+    "score_name",
+    ["../score.mscx", "dir/../../score.mscx", "..\\score.mscx", "C:/score.mscx"],
+)
+def test_unsafe_archive_member_paths_are_rejected_atomically(
+    tmp_path: Path,
+    score_name: str,
+):
+    source = tmp_path / "source.mscz"
+    output = tmp_path / "out.mscz"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr(score_name, SCORE_XML)
+    output.write_bytes(b"existing")
+
+    with pytest.raises(ScoreFormatError, match="unsafe member path"):
+        transpose_mscz(source, output, "Bb", "C")
+
+    assert output.read_bytes() == b"existing"
+
+
+def test_safe_dot_prefixed_unicode_score_member_is_supported(tmp_path: Path):
+    source = tmp_path / "source.mscz"
+    output = tmp_path / "out.mscz"
+    score_name = "..bongo español.mscx"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr(score_name, SCORE_XML)
+
+    transpose_mscz(source, output, "Bb", "C")
+
+    with zipfile.ZipFile(output) as archive:
+        pitches = [
+            int(element.text)
+            for element in ET.fromstring(archive.read(score_name)).iter("pitch")
+        ]
+    assert pitches == [72, 76]
+
+
+def test_archive_symlink_member_is_rejected(tmp_path: Path):
+    source = tmp_path / "source.mscz"
+    link = zipfile.ZipInfo("score.mscx")
+    link.create_system = 3
+    link.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr(link, SCORE_XML)
+
+    with pytest.raises(ScoreFormatError, match="special-file type"):
+        transpose_mscz(source, tmp_path / "out.mscz", "Bb", "C")
+
+
+def test_archive_file_directory_prefix_collision_is_rejected(tmp_path: Path):
+    source = tmp_path / "source.mscz"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("score.mscx", SCORE_XML)
+        archive.writestr("META-INF", b"file, not directory")
+        archive.writestr("META-INF/container.xml", CONTAINER_XML)
+
+    with pytest.raises(ScoreFormatError, match="file/directory path collision"):
+        transpose_mscz(source, tmp_path / "out.mscz", "Bb", "C")
+
+
+def test_suspicious_archive_compression_ratio_is_rejected(tmp_path: Path):
+    source = tmp_path / "source.mscz"
+    with zipfile.ZipFile(
+        source,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=9,
+    ) as archive:
+        archive.writestr("score.mscx", SCORE_XML)
+        archive.writestr("asset.bin", b"0" * (2 * 1024 * 1024))
+
+    with pytest.raises(ScoreFormatError, match="compression ratio"):
+        transpose_mscz(source, tmp_path / "out.mscz", "Bb", "C")
+
+
+def test_deflate_decoder_error_is_wrapped_as_score_format_error(tmp_path: Path):
+    source = tmp_path / "source.mscz"
+    output = tmp_path / "out.mscz"
+    with zipfile.ZipFile(
+        source,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=9,
+    ) as archive:
+        archive.writestr("score.mscx", SCORE_XML)
+    raw = bytearray(source.read_bytes())
+    with zipfile.ZipFile(source) as archive:
+        info = archive.getinfo("score.mscx")
+    name_length, extra_length = struct.unpack_from("<HH", raw, info.header_offset + 26)
+    payload_offset = info.header_offset + 30 + name_length + extra_length
+    raw[payload_offset] ^= 0x02
+    source.write_bytes(raw)
+    output.write_bytes(b"existing")
+
+    with pytest.raises(ScoreFormatError, match="read or validate"):
+        transpose_mscz(source, output, "Bb", "C")
+
+    assert output.read_bytes() == b"existing"
+
+
+def test_unsupported_zip_extract_version_is_wrapped(tmp_path: Path):
+    source = tmp_path / "source.mscz"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("score.mscx", SCORE_XML)
+    raw = bytearray(source.read_bytes())
+    central_offset = raw.index(b"PK\x01\x02")
+    struct.pack_into("<H", raw, central_offset + 6, 84)
+    source.write_bytes(raw)
+
+    with pytest.raises(ScoreFormatError, match="valid MSCZ|read or validate"):
+        transpose_mscz(source, tmp_path / "out.mscz", "Bb", "C")
+
+
+def test_streamed_member_size_must_match_zip_metadata(tmp_path: Path):
+    source = tmp_path / "source.mscz"
+    with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("score.mscx", SCORE_XML)
+        archive.writestr("asset.bin", b"asset")
+    raw = bytearray(source.read_bytes())
+    with zipfile.ZipFile(source) as archive:
+        info = archive.getinfo("asset.bin")
+    struct.pack_into("<I", raw, info.header_offset + 22, info.file_size + 100)
+    central_offset = 0
+    while (central_offset := raw.find(b"PK\x01\x02", central_offset)) >= 0:
+        name_length = struct.unpack_from("<H", raw, central_offset + 28)[0]
+        extra_length = struct.unpack_from("<H", raw, central_offset + 30)[0]
+        comment_length = struct.unpack_from("<H", raw, central_offset + 32)[0]
+        name_offset = central_offset + 46
+        if raw[name_offset : name_offset + name_length] == b"asset.bin":
+            struct.pack_into("<I", raw, central_offset + 24, info.file_size + 100)
+            break
+        central_offset = name_offset + name_length + extra_length + comment_length
+    source.write_bytes(raw)
+
+    with pytest.raises(ScoreFormatError, match="size does not match"):
+        transpose_mscz(source, tmp_path / "out.mscz", "Bb", "C")
+
+
+def test_no_op_never_publishes_a_replaced_source_path(
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "source.mscz"
+    output = tmp_path / "out.mscz"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("score.mscx", SCORE_XML)
+    output.write_bytes(b"existing-output")
+
+    from music_score_toolkit import mscz as mscz_module
+
+    original_read = mscz_module._read_archive_member
+    replaced = False
+
+    def read_then_replace_path(*args, **kwargs):
+        nonlocal replaced
+        payload = original_read(*args, **kwargs)
+        if not replaced:
+            replacement = tmp_path / "replacement.mscz"
+            replacement.write_bytes(b"replaced after validation")
+            os.replace(replacement, source)
+            replaced = True
+        return payload
+
+    monkeypatch.setattr(mscz_module, "_read_archive_member", read_then_replace_path)
+
+    with pytest.raises(ScoreFormatError, match="changed while"):
+        transpose_mscz(source, output, "Bb", "Bb")
+
+    assert output.read_bytes() == b"existing-output"
+    assert source.read_bytes() == b"replaced after validation"
+
+
+def test_long_valid_output_basename_does_not_break_staging(tmp_path: Path):
+    source = tmp_path / "source.mscz"
+    output = tmp_path / (("o" * 240) + ".mscz")
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("score.mscx", SCORE_XML)
+
+    transpose_mscz(source, output, "Bb", "C")
+
+    assert output.is_file()

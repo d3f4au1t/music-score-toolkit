@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import copy
+import lzma
 import os
 import shutil
 import stat
 import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .keys import (
     KEY_SIGNATURES,
@@ -99,6 +102,26 @@ _ALTERATION_TO_LEGACY_ACCIDENTAL = {
 }
 
 _SCORE_BOUNDARIES = frozenset({"Part", "Staff", "Score"})
+
+_MAX_ARCHIVE_MEMBERS = 10_000
+_MAX_ARCHIVE_MEMBER_SIZE = 2 * 1024 * 1024 * 1024
+_MAX_ARCHIVE_TOTAL_SIZE = 4 * 1024 * 1024 * 1024
+_MAX_COMPRESSED_RATIO = 500
+_MAX_SCORE_XML_SIZE = 256 * 1024 * 1024
+_MAX_METADATA_XML_SIZE = 16 * 1024 * 1024
+_COPY_CHUNK_SIZE = 1024 * 1024
+
+_ARCHIVE_READ_ERRORS = (
+    EOFError,
+    UnicodeError,
+    lzma.LZMAError,
+    NotImplementedError,
+    OSError,
+    RuntimeError,
+    zipfile.BadZipFile,
+    zipfile.LargeZipFile,
+    zlib.error,
+)
 
 
 def _read_tpc(note: ET.Element, field_name: str) -> tuple[ET.Element | None, int | None]:
@@ -1050,19 +1073,189 @@ def transpose_mscx(
     )
 
 
-def _read_archive_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
-    try:
-        return archive.read(info)
-    except (
-        EOFError,
-        NotImplementedError,
-        OSError,
-        RuntimeError,
-        zipfile.BadZipFile,
-    ) as exc:
+def _archive_member_key(info: zipfile.ZipInfo) -> str:
+    name = info.filename
+    raw_name = info.orig_filename
+    if raw_name != name or not name:
+        raise ScoreFormatError(f"MSCZ archive contains an invalid member name {raw_name!r}.")
+    if "\\" in name or any(ord(character) < 32 for character in name):
+        raise ScoreFormatError(f"MSCZ archive contains an unsafe member path {name!r}.")
+
+    path_text = name.removesuffix("/")
+    parts = path_text.split("/")
+    if (
+        not path_text
+        or name.startswith("/")
+        or PurePosixPath(path_text).is_absolute()
+        or PureWindowsPath(path_text).drive
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        raise ScoreFormatError(f"MSCZ archive contains an unsafe member path {name!r}.")
+
+    unix_mode = info.external_attr >> 16
+    file_type = stat.S_IFMT(unix_mode)
+    if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
         raise ScoreFormatError(
-            f"Unable to read MSCZ member {info.filename!r}: {exc}"
+            f"MSCZ archive member {name!r} has an unsupported special-file type."
+        )
+    if (file_type == stat.S_IFDIR) != info.is_dir() and file_type != 0:
+        raise ScoreFormatError(
+            f"MSCZ archive member {name!r} has inconsistent file metadata."
+        )
+    if info.flag_bits & 0x1:
+        raise ScoreFormatError(f"MSCZ archive member {name!r} is encrypted.")
+
+    return path_text
+
+
+def _validate_archive_members(infos: list[zipfile.ZipInfo]) -> dict[str, zipfile.ZipInfo]:
+    if len(infos) > _MAX_ARCHIVE_MEMBERS:
+        raise ScoreFormatError(
+            f"MSCZ archive contains too many members ({len(infos)}; "
+            f"maximum {_MAX_ARCHIVE_MEMBERS})."
+        )
+
+    total_size = 0
+    normalized_names: dict[str, str] = {}
+    members: dict[str, zipfile.ZipInfo] = {}
+    for info in infos:
+        if info.filename in members:
+            raise ScoreFormatError(
+                f"MSCZ archive contains duplicate member {info.filename!r}."
+            )
+        key = _archive_member_key(info)
+        previous = normalized_names.get(key)
+        if previous is not None:
+            raise ScoreFormatError(
+                "MSCZ archive contains colliding member names "
+                f"{previous!r} and {info.filename!r}."
+            )
+        normalized_names[key] = info.filename
+        members[info.filename] = info
+
+        if (
+            info.file_size < 0
+            or info.compress_size < 0
+            or info.file_size > _MAX_ARCHIVE_MEMBER_SIZE
+        ):
+            raise ScoreFormatError(
+                f"MSCZ archive member {info.filename!r} is too large "
+                f"({info.file_size} bytes; maximum {_MAX_ARCHIVE_MEMBER_SIZE})."
+            )
+        total_size += info.file_size
+        if total_size > _MAX_ARCHIVE_TOTAL_SIZE:
+            raise ScoreFormatError(
+                f"MSCZ archive expands beyond {_MAX_ARCHIVE_TOTAL_SIZE} bytes."
+            )
+        if (
+            info.compress_type == zipfile.ZIP_STORED
+            and info.compress_size != info.file_size
+        ):
+            raise ScoreFormatError(
+                f"MSCZ member {info.filename!r} stored size does not match "
+                "its ZIP metadata."
+            )
+        if (
+            info.file_size >= 1024 * 1024
+            and info.file_size > max(info.compress_size, 1) * _MAX_COMPRESSED_RATIO
+        ):
+            raise ScoreFormatError(
+                f"MSCZ archive member {info.filename!r} has a suspicious "
+                "compression ratio."
+            )
+
+    for singleton in ("META-INF/container.xml", "score_style.mss"):
+        variants = [name for name in members if name.casefold() == singleton.casefold()]
+        if len(variants) > 1:
+            raise ScoreFormatError(
+                f"MSCZ archive contains ambiguous {singleton} members."
+            )
+    for key, name in normalized_names.items():
+        parts = key.split("/")
+        for index in range(1, len(parts)):
+            ancestor_name = normalized_names.get("/".join(parts[:index]))
+            if ancestor_name is not None and not members[ancestor_name].is_dir():
+                raise ScoreFormatError(
+                    "MSCZ archive contains a file/directory path collision between "
+                    f"{ancestor_name!r} and {name!r}."
+                )
+    return members
+
+
+def _read_archive_member(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    maximum_size: int | None = None,
+) -> bytes:
+    if maximum_size is not None and info.file_size > maximum_size:
+        raise ScoreFormatError(
+            f"MSCZ member {info.filename!r} exceeds the {maximum_size}-byte limit."
+        )
+    try:
+        payload = archive.read(info)
+    except _ARCHIVE_READ_ERRORS as exc:
+        raise ScoreFormatError(
+            f"Unable to read or validate MSCZ member {info.filename!r}: {exc}"
         ) from exc
+    if len(payload) != info.file_size:
+        raise ScoreFormatError(
+            f"MSCZ member {info.filename!r} size does not match its ZIP metadata."
+        )
+    return payload
+
+
+def _copy_archive_member(
+    source: zipfile.ZipFile,
+    target: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+) -> None:
+    expected_size = info.file_size
+    target_info = copy.copy(info)
+    if info.is_dir():
+        if expected_size != 0 or info.CRC != 0:
+            raise ScoreFormatError(
+                f"MSCZ directory member {info.filename!r} has invalid content metadata."
+            )
+        payload = _read_archive_member(source, info)
+        if payload:
+            raise ScoreFormatError(
+                f"MSCZ directory member {info.filename!r} contains file data."
+            )
+        try:
+            target.writestr(target_info, b"")
+        except _ARCHIVE_READ_ERRORS as exc:
+            raise ScoreFormatError(
+                f"Unable to preserve MSCZ member {info.filename!r}: {exc}"
+            ) from exc
+        return
+    try:
+        with (
+            source.open(info, "r") as source_member,
+            target.open(target_info, "w") as target_member,
+        ):
+            copied = 0
+            while chunk := source_member.read(_COPY_CHUNK_SIZE):
+                target_member.write(chunk)
+                copied += len(chunk)
+    except _ARCHIVE_READ_ERRORS as exc:
+        raise ScoreFormatError(
+            f"Unable to read or validate MSCZ member {info.filename!r}: {exc}"
+        ) from exc
+    if copied != expected_size:
+        raise ScoreFormatError(
+            f"MSCZ member {info.filename!r} size does not match its ZIP metadata."
+        )
+
+
+def _file_snapshot(item_stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        item_stat.st_dev,
+        item_stat.st_ino,
+        item_stat.st_size,
+        item_stat.st_mtime_ns,
+        item_stat.st_ctime_ns,
+    )
 
 
 def _archive_concert_pitch_setting(
@@ -1079,7 +1272,11 @@ def _archive_concert_pitch_setting(
     if len(style_infos) > 1:
         raise ScoreFormatError("MSCZ archive contains ambiguous score_style.mss members.")
 
-    payload = _read_archive_member(archive, style_infos[0])
+    payload = _read_archive_member(
+        archive,
+        style_infos[0],
+        maximum_size=_MAX_METADATA_XML_SIZE,
+    )
     try:
         style_root = ET.fromstring(payload)
     except (ET.ParseError, LookupError, ValueError) as exc:
@@ -1093,15 +1290,16 @@ def _archive_concert_pitch_setting(
 
 def _validate_mscz_manifest(
     archive: zipfile.ZipFile,
-    infos: list[zipfile.ZipInfo],
+    members: dict[str, zipfile.ZipInfo],
 ) -> None:
-    container_infos = [
-        info for info in infos if info.filename == "META-INF/container.xml"
-    ]
-    if not container_infos:
+    container_info = members.get("META-INF/container.xml")
+    if container_info is None:
         return
-    container_info = container_infos[0]
-    payload = _read_archive_member(archive, container_info)
+    payload = _read_archive_member(
+        archive,
+        container_info,
+        maximum_size=_MAX_METADATA_XML_SIZE,
+    )
     try:
         root = ET.fromstring(payload)
     except (ET.ParseError, LookupError, ValueError) as exc:
@@ -1109,26 +1307,42 @@ def _validate_mscz_manifest(
     if root.tag.rsplit("}", 1)[-1] != "container":
         raise ScoreFormatError("Invalid MSCZ container manifest root.")
 
-    names = {info.filename for info in infos}
+    rootfiles_containers = [
+        child
+        for child in root
+        if isinstance(child.tag, str)
+        and child.tag.rsplit("}", 1)[-1] == "rootfiles"
+    ]
+    if len(rootfiles_containers) != 1:
+        raise ScoreFormatError(
+            "MSCZ container manifest must contain one direct <rootfiles>."
+        )
     rootfiles = [
+        child
+        for child in rootfiles_containers[0]
+        if isinstance(child.tag, str) and child.tag.rsplit("}", 1)[-1] == "rootfile"
+    ]
+    all_rootfiles = [
         element
         for element in root.iter()
-        if isinstance(element.tag, str) and element.tag.rsplit("}", 1)[-1] == "rootfile"
+        if isinstance(element.tag, str)
+        and element.tag.rsplit("}", 1)[-1] == "rootfile"
     ]
-    if not rootfiles:
-        raise ScoreFormatError("MSCZ container manifest has no rootfile entries.")
+    if not rootfiles or len(all_rootfiles) != len(rootfiles):
+        raise ScoreFormatError(
+            "MSCZ container manifest has invalid <rootfile> structure."
+        )
     references: list[str] = []
     for rootfile in rootfiles:
         reference = rootfile.get("full-path", "")
-        path = PurePosixPath(reference)
-        if (
-            not reference
-            or path.is_absolute()
-            or ".." in path.parts
-            or reference not in names
-        ):
+        referenced_info = members.get(reference)
+        if not reference or referenced_info is None or referenced_info.is_dir():
             raise ScoreFormatError(
                 f"MSCZ container manifest references an invalid member {reference!r}."
+            )
+        if reference in references:
+            raise ScoreFormatError(
+                f"MSCZ container manifest repeats rootfile {reference!r}."
             )
         references.append(reference)
     if not any(reference.lower().endswith(".mscx") for reference in references):
@@ -1163,57 +1377,51 @@ def transpose_mscz(
     try:
         with tempfile.NamedTemporaryFile(
             dir=destination.parent,
-            prefix=f".{destination.name}.",
+            prefix=".music-score-",
             suffix=".tmp",
             delete=False,
         ) as handle:
             temp_name = handle.name
 
         try:
-            source_zip = zipfile.ZipFile(source, "r")
-        except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
-            raise ScoreFormatError(f"Not a valid MSCZ/ZIP archive: {source}") from exc
+            source_handle = source.open("rb")
+        except OSError as exc:
+            raise ScoreFormatError(f"Unable to open MSCZ archive {source}: {exc}") from exc
 
-        with source_zip:
-            infos = source_zip.infolist()
-            duplicates = [
-                name
-                for name, count in Counter(info.filename for info in infos).items()
-                if count > 1
-            ]
-            if duplicates:
-                raise ScoreFormatError(
-                    f"MSCZ archive contains duplicate member {duplicates[0]!r}."
-                )
-            score_entries = [
-                info
-                for info in infos
-                if not info.is_dir() and info.filename.lower().endswith(".mscx")
-            ]
-            if not score_entries:
-                raise ScoreFormatError("MSCZ archive does not contain an .mscx score entry.")
+        with source_handle:
+            initial_snapshot = _file_snapshot(os.fstat(source_handle.fileno()))
             try:
-                bad_member = source_zip.testzip()
-            except (
-                EOFError,
-                NotImplementedError,
-                OSError,
-                RuntimeError,
-                zipfile.BadZipFile,
-            ) as exc:
-                raise ScoreFormatError(f"Unable to validate MSCZ archive: {exc}") from exc
-            if bad_member is not None:
-                raise ScoreFormatError(
-                    f"MSCZ archive contains a corrupt member {bad_member!r}."
-                )
-            _validate_mscz_manifest(source_zip, infos)
-            concert_pitch = _archive_concert_pitch_setting(source_zip, infos)
+                source_zip = zipfile.ZipFile(source_handle, "r")
+            except _ARCHIVE_READ_ERRORS as exc:
+                raise ScoreFormatError(f"Not a valid MSCZ/ZIP archive: {source}") from exc
 
-            with zipfile.ZipFile(temp_name, "w") as target_zip:
-                target_zip.comment = source_zip.comment
-                for info in infos:
-                    payload = _read_archive_member(source_zip, info)
-                    if info in score_entries:
+            with source_zip:
+                infos = source_zip.infolist()
+                members = _validate_archive_members(infos)
+                score_entries = [
+                    info
+                    for info in infos
+                    if not info.is_dir() and info.filename.lower().endswith(".mscx")
+                ]
+                if not score_entries:
+                    raise ScoreFormatError(
+                        "MSCZ archive does not contain an .mscx score entry."
+                    )
+                _validate_mscz_manifest(source_zip, members)
+                concert_pitch = _archive_concert_pitch_setting(source_zip, infos)
+                score_names = {info.filename for info in score_entries}
+
+                with zipfile.ZipFile(temp_name, "w") as target_zip:
+                    target_zip.comment = source_zip.comment
+                    for info in infos:
+                        if info.filename not in score_names:
+                            _copy_archive_member(source_zip, target_zip, info)
+                            continue
+                        payload = _read_archive_member(
+                            source_zip,
+                            info,
+                            maximum_size=_MAX_SCORE_XML_SIZE,
+                        )
                         payload, report = transpose_mscx(
                             payload,
                             from_key,
@@ -1226,10 +1434,24 @@ def transpose_mscz(
                         signature_count += report.key_signatures_changed
                         score_count += report.score_entries_changed
                         harmony_count += report.chord_symbols_changed
-                    target_zip.writestr(info, payload)
+                        target_zip.writestr(info, payload)
 
-        if score_count == 0:
-            shutil.copyfile(source, temp_name)
+            if _file_snapshot(os.fstat(source_handle.fileno())) != initial_snapshot:
+                raise ScoreFormatError(
+                    f"MSCZ archive changed while it was being processed: {source}"
+                )
+            if score_count == 0:
+                source_handle.seek(0)
+                with Path(temp_name).open("wb") as staged_output:
+                    shutil.copyfileobj(
+                        source_handle,
+                        staged_output,
+                        _COPY_CHUNK_SIZE,
+                    )
+                if _file_snapshot(os.fstat(source_handle.fileno())) != initial_snapshot:
+                    raise ScoreFormatError(
+                        f"MSCZ archive changed while it was being copied: {source}"
+                    )
         os.chmod(temp_name, output_mode)
         os.replace(temp_name, destination)
         temp_name = None
