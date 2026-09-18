@@ -23,6 +23,12 @@ VALID_MUSICXML = b"""<?xml version="1.0"?>
   <part id="P1"><measure number="1"/></part>
 </score-partwise>
 """
+MISMATCHED_MUSICXML = b"""<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
+  <part id="P2"><measure number="1"/></part>
+</score-partwise>
+"""
 VALID_MSCX = b'<museScore version="4.0"><Score/></museScore>'
 MXL_CONTAINER = b"""<?xml version="1.0"?>
 <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -372,6 +378,41 @@ def test_convert_score_rejects_nonempty_junk_for_known_format(
     monkeypatch.setattr("music_score_toolkit.tools.subprocess.run", write_junk)
 
     with pytest.raises(RuntimeError, match="produced an invalid"):
+        convert_score(source, destination, musescore=executable)
+
+    assert destination.read_text() == "previous output"
+    assert not list(tmp_path.glob(".score.*"))
+
+
+@pytest.mark.parametrize("suffix", [".musicxml", ".mxl"])
+def test_convert_score_rejects_mismatched_musicxml_part_ids(
+    suffix: str,
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "source.musicxml"
+    destination = tmp_path / f"score{suffix}"
+    executable = tmp_path / "musescore"
+    source.write_bytes(VALID_MUSICXML)
+    destination.write_text("previous output")
+    make_executable(executable)
+
+    def write_mismatched_score(command, *, check):
+        output = Path(command[-1])
+        if output.suffix == ".mxl":
+            with zipfile.ZipFile(output, "w") as archive:
+                archive.writestr("META-INF/container.xml", MXL_CONTAINER)
+                archive.writestr("score.musicxml", MISMATCHED_MUSICXML)
+        else:
+            output.write_bytes(MISMATCHED_MUSICXML)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "music_score_toolkit.tools.subprocess.run",
+        write_mismatched_score,
+    )
+
+    with pytest.raises(RuntimeError, match="IDs do not match"):
         convert_score(source, destination, musescore=executable)
 
     assert destination.read_text() == "previous output"

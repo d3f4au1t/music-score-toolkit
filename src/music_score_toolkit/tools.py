@@ -60,6 +60,20 @@ def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+def _musicxml_ids(elements: list[ET.Element], *, label: str) -> list[str]:
+    identifiers = [element.get("id", "") for element in elements]
+    if any(not identifier for identifier in identifiers):
+        raise ValueError(f"MusicXML {label} has a missing or empty id")
+    duplicates = [
+        identifier
+        for identifier, count in Counter(identifiers).items()
+        if count > 1
+    ]
+    if duplicates:
+        raise ValueError(f"MusicXML {label} contains duplicate id {duplicates[0]!r}")
+    return identifiers
+
+
 def _validate_musicxml_root(root: ET.Element) -> None:
     root_name = _local_name(root.tag)
     if root_name not in MUSICXML_ROOTS:
@@ -70,19 +84,35 @@ def _validate_musicxml_root(root: ET.Element) -> None:
         (child for child in children if _local_name(child.tag) == "part-list"),
         None,
     )
-    if part_list is None or not any(_local_name(child.tag) == "score-part" for child in part_list):
+    if part_list is None:
         raise ValueError("MusicXML score has no populated <part-list>")
+    score_parts = [
+        child for child in part_list if _local_name(child.tag) == "score-part"
+    ]
+    if not score_parts:
+        raise ValueError("MusicXML score has no populated <part-list>")
+    declared_ids = _musicxml_ids(score_parts, label="<score-part>")
 
     if root_name == "score-partwise":
         parts = [child for child in children if _local_name(child.tag) == "part"]
+        part_ids = _musicxml_ids(parts, label="<part>")
+        if part_ids != declared_ids:
+            raise ValueError(
+                "MusicXML <part> IDs do not match <score-part> declarations"
+            )
         complete = bool(parts) and all(
             any(_local_name(child.tag) == "measure" for child in part) for part in parts
         )
     else:
         measures = [child for child in children if _local_name(child.tag) == "measure"]
-        complete = bool(measures) and all(
-            any(_local_name(child.tag) == "part" for child in measure) for measure in measures
-        )
+        complete = bool(measures)
+        for measure in measures:
+            parts = [child for child in measure if _local_name(child.tag) == "part"]
+            part_ids = _musicxml_ids(parts, label="<part>")
+            if part_ids != declared_ids:
+                raise ValueError(
+                    "MusicXML measure <part> IDs do not match <score-part> declarations"
+                )
     if not complete:
         raise ValueError("MusicXML score has an incomplete part/measure structure")
 

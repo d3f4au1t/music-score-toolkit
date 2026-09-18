@@ -67,6 +67,43 @@ def test_validates_bundled_smartscore_musicxml():
 @pytest.mark.parametrize(
     "payload",
     [
+        b"""<score-partwise>
+        <part-list><score-part id="P1"/></part-list>
+        <part id="P2"><measure number="1"/></part>
+        </score-partwise>""",
+        b"""<score-partwise>
+        <part-list><score-part id="P1"/></part-list>
+        <part id="P1"><measure number="1"/></part>
+        <part id="P2"><measure number="1"/></part>
+        </score-partwise>""",
+        b"""<score-partwise>
+        <part-list><score-part id="P1"/><score-part id="P1"/></part-list>
+        <part id="P1"><measure number="1"/></part>
+        </score-partwise>""",
+        b"""<score-partwise>
+        <part-list><score-part/></part-list>
+        <part><measure number="1"/></part>
+        </score-partwise>""",
+        b"""<score-timewise>
+        <part-list><score-part id="P1"/></part-list>
+        <measure number="1"><part id="P2"/></measure>
+        </score-timewise>""",
+    ],
+)
+def test_rejects_mismatched_or_invalid_musicxml_part_ids(
+    tmp_path: Path,
+    payload: bytes,
+):
+    score = tmp_path / "score.musicxml"
+    score.write_bytes(payload)
+
+    with pytest.raises(ScoreExportError, match="id|IDs"):
+        validate_score_file(score)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
         b"",
         b"<score-partwise>",
         b"<settings><option>not music</option></settings>",
