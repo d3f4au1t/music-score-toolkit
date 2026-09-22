@@ -176,7 +176,7 @@ def test_convert_score_publishes_output_atomically(monkeypatch, tmp_path: Path):
 
     assert convert_score(source, destination, musescore=executable) == destination
     assert destination.read_bytes() == VALID_PDF
-    assert list(tmp_path.glob(".score.*")) == []
+    assert list(tmp_path.glob(".music-score-*")) == []
 
 
 def test_convert_score_uses_visible_staged_name_and_cleans_musescore_sidecars(
@@ -194,6 +194,7 @@ def test_convert_score_uses_visible_staged_name_and_cleans_musescore_sidecars(
         temporary_output = Path(command[-1])
         assert temporary_output.name == "output.mscx"
         assert not temporary_output.name.startswith(".")
+        assert temporary_output.parent.name.startswith(".music-score-")
         (temporary_output.parent / "META-INF").mkdir()
         (temporary_output.parent / "META-INF" / "container.xml").write_text("sidecar")
         (temporary_output.parent / "score_style.mss").write_text("sidecar")
@@ -204,9 +205,28 @@ def test_convert_score_uses_visible_staged_name_and_cleans_musescore_sidecars(
 
     assert convert_score(source, destination, musescore=executable) == destination
     assert destination.read_bytes() == VALID_MSCX
-    assert list(tmp_path.glob(".score.*")) == []
+    assert list(tmp_path.glob(".music-score-*")) == []
     assert not (tmp_path / "META-INF").exists()
     assert not (tmp_path / "score_style.mss").exists()
+
+
+def test_convert_score_supports_long_valid_output_basename(monkeypatch, tmp_path: Path):
+    source = tmp_path / "source.musicxml"
+    destination = tmp_path / (("o" * 240) + ".pdf")
+    executable = tmp_path / "musescore"
+    source.write_bytes(VALID_MUSICXML)
+    make_executable(executable)
+
+    def succeed(command, *, check):
+        assert check is False
+        write_valid_output(Path(command[-1]))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("music_score_toolkit.tools.subprocess.run", succeed)
+
+    assert convert_score(source, destination, musescore=executable) == destination
+    assert destination.read_bytes() == VALID_PDF
+    assert not list(tmp_path.glob(".music-score-*"))
 
 
 def test_convert_score_accepts_output_written_before_a_crash_on_exit(monkeypatch, tmp_path: Path):
@@ -228,7 +248,7 @@ def test_convert_score_accepts_output_written_before_a_crash_on_exit(monkeypatch
 
     assert convert_score(source, destination, musescore=executable) == destination
     assert destination.read_bytes() == VALID_PDF
-    assert list(tmp_path.glob(".score.*")) == []
+    assert list(tmp_path.glob(".music-score-*")) == []
 
 
 def test_convert_score_rejects_valid_looking_output_from_regular_failure(
@@ -294,7 +314,7 @@ def test_convert_score_preserves_destination_and_cleans_partial_output(monkeypat
         convert_score(source, destination, musescore=executable)
 
     assert destination.read_text() == "previous output"
-    assert list(tmp_path.glob(".score.*")) == []
+    assert list(tmp_path.glob(".music-score-*")) == []
 
 
 def test_convert_score_rejects_missing_new_output(monkeypatch, tmp_path: Path):
@@ -314,7 +334,7 @@ def test_convert_score_rejects_missing_new_output(monkeypatch, tmp_path: Path):
         convert_score(source, destination, musescore=executable)
 
     assert destination.read_text() == "previous output"
-    assert list(tmp_path.glob(".score.*")) == []
+    assert list(tmp_path.glob(".music-score-*")) == []
 
 
 def test_convert_score_rejects_nonexecutable_explicit_path(tmp_path: Path):
@@ -381,7 +401,7 @@ def test_convert_score_rejects_nonempty_junk_for_known_format(
         convert_score(source, destination, musescore=executable)
 
     assert destination.read_text() == "previous output"
-    assert not list(tmp_path.glob(".score.*"))
+    assert not list(tmp_path.glob(".music-score-*"))
 
 
 @pytest.mark.parametrize("suffix", [".musicxml", ".mxl"])
@@ -416,7 +436,7 @@ def test_convert_score_rejects_mismatched_musicxml_part_ids(
         convert_score(source, destination, musescore=executable)
 
     assert destination.read_text() == "previous output"
-    assert not list(tmp_path.glob(".score.*"))
+    assert not list(tmp_path.glob(".music-score-*"))
 
 
 def test_convert_score_wraps_launch_oserror(monkeypatch, tmp_path: Path):
@@ -436,7 +456,7 @@ def test_convert_score_wraps_launch_oserror(monkeypatch, tmp_path: Path):
         convert_score(source, destination, musescore=executable)
 
     assert destination.read_text() == "previous output"
-    assert not list(tmp_path.glob(".score.*"))
+    assert not list(tmp_path.glob(".music-score-*"))
 
 
 def test_cli_reports_unhandled_oserror_without_traceback(monkeypatch, capsys):

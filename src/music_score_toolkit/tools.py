@@ -342,7 +342,7 @@ def convert_score(
         staging_directory = Path(
             tempfile.mkdtemp(
                 dir=destination.parent,
-                prefix=f".{destination.stem}.",
+                prefix=".music-score-",
             )
         )
     except OSError as exc:
