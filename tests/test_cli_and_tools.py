@@ -469,6 +469,72 @@ def test_convert_score_accepts_musicxml_parts_in_non_display_order(
     assert destination.read_bytes() == REORDERED_MUSICXML
 
 
+def test_convert_score_rejects_multiple_musicxml_part_lists(
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "source.musicxml"
+    destination = tmp_path / "score.musicxml"
+    executable = tmp_path / "musescore"
+    source.write_bytes(VALID_MUSICXML)
+    destination.write_text("previous output")
+    make_executable(executable)
+
+    def write_ambiguous_score(command, *, check):
+        assert check is False
+        Path(command[-1]).write_bytes(
+            b"""<score-partwise>
+            <part-list><score-part id="P1"/></part-list>
+            <part-list><score-part id="P2"/></part-list>
+            <part id="P1"><measure number="1"/></part>
+            </score-partwise>"""
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "music_score_toolkit.tools.subprocess.run",
+        write_ambiguous_score,
+    )
+
+    with pytest.raises(RuntimeError, match="one populated <part-list>"):
+        convert_score(source, destination, musescore=executable)
+
+    assert destination.read_text() == "previous output"
+    assert not list(tmp_path.glob(".music-score-*"))
+
+
+def test_convert_score_accepts_mxl_with_alternate_rootfile_renditions(
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "source.musicxml"
+    destination = tmp_path / "score.mxl"
+    executable = tmp_path / "musescore"
+    source.write_bytes(VALID_MUSICXML)
+    make_executable(executable)
+
+    def write_multi_rootfile_score(command, *, check):
+        assert check is False
+        output = Path(command[-1])
+        container = b"""<container><rootfiles>
+        <rootfile full-path="score.musicxml"/>
+        <rootfile full-path="preview.pdf" media-type="application/pdf"/>
+        </rootfiles></container>"""
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("META-INF/container.xml", container)
+            archive.writestr("score.musicxml", VALID_MUSICXML)
+            archive.writestr("preview.pdf", VALID_PDF)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "music_score_toolkit.tools.subprocess.run",
+        write_multi_rootfile_score,
+    )
+
+    assert convert_score(source, destination, musescore=executable) == destination
+    assert destination.is_file()
+
+
 def test_convert_score_rejects_mxl_with_nested_decoy_rootfile(
     monkeypatch,
     tmp_path: Path,

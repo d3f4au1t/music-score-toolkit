@@ -80,12 +80,12 @@ def _validate_musicxml_root(root: ET.Element) -> None:
         raise ValueError(f"expected a MusicXML score root, found <{root_name}>")
 
     children = list(root)
-    part_list = next(
-        (child for child in children if _local_name(child.tag) == "part-list"),
-        None,
-    )
-    if part_list is None:
-        raise ValueError("MusicXML score has no populated <part-list>")
+    part_lists = [
+        child for child in children if _local_name(child.tag) == "part-list"
+    ]
+    if len(part_lists) != 1:
+        raise ValueError("MusicXML score must contain one populated <part-list>")
+    part_list = part_lists[0]
     score_parts = [
         child for child in part_list if _local_name(child.tag) == "score-part"
     ]
@@ -202,18 +202,33 @@ def _validate_mxl(path: Path) -> None:
             for element in container.iter()
             if _local_name(element.tag) == "rootfile"
         ]
-        if len(rootfiles) != 1 or len(all_rootfiles) != 1:
-            raise ValueError("MXL container must contain one direct <rootfile>")
-        rootfile = rootfiles[0].get("full-path", "")
-        member_path = PurePosixPath(rootfile)
-        if (
-            not rootfile
-            or member_path.is_absolute()
-            or ".." in member_path.parts
-            or names.count(rootfile) != 1
-        ):
-            raise ValueError(f"MXL container references an invalid rootfile {rootfile!r}")
-        _validate_musicxml_root(ET.fromstring(archive.read(rootfile)))
+        if not rootfiles or len(all_rootfiles) != len(rootfiles):
+            raise ValueError(
+                "MXL container must contain valid direct <rootfile> entries only"
+            )
+        references: set[str] = set()
+        for rootfile in rootfiles:
+            reference = rootfile.get("full-path", "")
+            member_path = PurePosixPath(reference)
+            try:
+                member_info = archive.getinfo(reference)
+            except KeyError:
+                member_info = None
+            if (
+                not reference
+                or member_path.is_absolute()
+                or ".." in member_path.parts
+                or reference in references
+                or names.count(reference) != 1
+                or member_info is None
+                or member_info.is_dir()
+            ):
+                raise ValueError(
+                    f"MXL container references an invalid rootfile {reference!r}"
+                )
+            references.add(reference)
+        first_rootfile = rootfiles[0].get("full-path", "")
+        _validate_musicxml_root(ET.fromstring(archive.read(first_rootfile)))
 
 
 def _validate_mscx(path: Path) -> None:

@@ -76,12 +76,14 @@ def _validate_musicxml_root(root: ET.Element, *, source: Path) -> None:
         )
 
     children = list(root)
-    part_list = next(
-        (child for child in children if _local_name(child.tag) == "part-list"),
-        None,
-    )
-    if part_list is None:
-        raise ScoreExportError(f"MusicXML score has no populated <part-list>: {source}")
+    part_lists = [
+        child for child in children if _local_name(child.tag) == "part-list"
+    ]
+    if len(part_lists) != 1:
+        raise ScoreExportError(
+            f"MusicXML score must contain one populated <part-list>: {source}"
+        )
+    part_list = part_lists[0]
     score_parts = [
         child for child in part_list if _local_name(child.tag) == "score-part"
     ]
@@ -173,22 +175,35 @@ def _validate_mxl(path: Path) -> None:
                 for element in container.iter()
                 if _local_name(element.tag) == "rootfile"
             ]
-            if len(rootfiles) != 1 or len(all_rootfiles) != 1:
+            if not rootfiles or len(all_rootfiles) != len(rootfiles):
                 raise ScoreExportError(
-                    f"MusicXML container must contain one direct <rootfile>: {path}"
+                    "MusicXML container must contain valid direct <rootfile> "
+                    f"entries only: {path}"
                 )
-            root_path = rootfiles[0].get("full-path", "")
-            member_path = PurePosixPath(root_path)
-            if (
-                not root_path
-                or member_path.is_absolute()
-                or ".." in member_path.parts
-                or names.count(root_path) != 1
-            ):
-                raise ScoreExportError(
-                    f"MusicXML container references an invalid rootfile {root_path!r}: {path}"
-                )
-            _parse_musicxml(archive.read(root_path), source=path)
+            references: set[str] = set()
+            for rootfile in rootfiles:
+                root_path = rootfile.get("full-path", "")
+                member_path = PurePosixPath(root_path)
+                try:
+                    member_info = archive.getinfo(root_path)
+                except KeyError:
+                    member_info = None
+                if (
+                    not root_path
+                    or member_path.is_absolute()
+                    or ".." in member_path.parts
+                    or root_path in references
+                    or names.count(root_path) != 1
+                    or member_info is None
+                    or member_info.is_dir()
+                ):
+                    raise ScoreExportError(
+                        "MusicXML container references an invalid rootfile "
+                        f"{root_path!r}: {path}"
+                    )
+                references.add(root_path)
+            first_root_path = rootfiles[0].get("full-path", "")
+            _parse_musicxml(archive.read(first_root_path), source=path)
     except ScoreExportError:
         raise
     except (

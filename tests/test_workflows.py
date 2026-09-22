@@ -115,6 +115,20 @@ def test_rejects_mismatched_or_invalid_musicxml_part_ids(
         validate_score_file(score)
 
 
+def test_rejects_multiple_musicxml_part_lists(tmp_path: Path):
+    score = tmp_path / "score.musicxml"
+    score.write_bytes(
+        b"""<score-partwise>
+        <part-list><score-part id="P1"/></part-list>
+        <part-list><score-part id="P2"/></part-list>
+        <part id="P1"><measure number="1"/></part>
+        </score-partwise>"""
+    )
+
+    with pytest.raises(ScoreExportError, match="one populated <part-list>"):
+        validate_score_file(score)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -145,6 +159,44 @@ def test_validates_mxl_without_optional_legacy_mimetype(tmp_path: Path):
     _write_mxl(score)
 
     validate_score_file(score)
+
+
+def test_validates_mxl_with_alternate_rootfile_renditions(tmp_path: Path):
+    score = tmp_path / "score.mxl"
+    container = b"""<container><rootfiles>
+      <rootfile full-path="score.musicxml"/>
+      <rootfile full-path="preview.pdf" media-type="application/pdf"/>
+    </rootfiles></container>"""
+    with zipfile.ZipFile(score, "w") as archive:
+        archive.writestr("META-INF/container.xml", container)
+        archive.writestr("score.musicxml", PARTWISE_XML)
+        archive.writestr("preview.pdf", b"%PDF-1.7\n%%EOF\n")
+
+    validate_score_file(score)
+
+
+@pytest.mark.parametrize(
+    "container",
+    [
+        b"""<container><rootfiles>
+        <rootfile full-path="score.musicxml"/>
+        <rootfile full-path="missing.pdf"/>
+        </rootfiles></container>""",
+        b"""<container><rootfiles>
+        <rootfile full-path="score.musicxml"/>
+        <rootfile full-path="score.musicxml"/>
+        </rootfiles></container>""",
+    ],
+)
+def test_rejects_invalid_alternate_mxl_rootfiles(
+    tmp_path: Path,
+    container: bytes,
+):
+    score = tmp_path / "score.mxl"
+    _write_mxl(score, container=container)
+
+    with pytest.raises(ScoreExportError, match="invalid rootfile"):
+        validate_score_file(score)
 
 
 @pytest.mark.parametrize(
