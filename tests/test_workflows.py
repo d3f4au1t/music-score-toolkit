@@ -121,6 +121,28 @@ def test_rejects_mismatched_or_invalid_musicxml_part_ids(
         validate_score_file(score)
 
 
+def test_musicxml_ids_use_xml_schema_whitespace_and_ncname_rules(tmp_path: Path):
+    score = tmp_path / "score.musicxml"
+    score.write_bytes(
+        """<score-partwise>
+        <part-list><score-part id="  Pärt\t">
+        <part-name>Music</part-name></score-part></part-list>
+        <part id="Pärt"><measure number="1"/></part>
+        </score-partwise>""".encode()
+    )
+
+    validate_score_file(score)
+
+    score.write_bytes(
+        b"""<score-partwise>
+        <part-list><score-part id="1 bad"><part-name>Music</part-name></score-part></part-list>
+        <part id="1 bad"><measure number="1"/></part>
+        </score-partwise>"""
+    )
+    with pytest.raises(ScoreExportError, match="invalid id"):
+        validate_score_file(score)
+
+
 def test_rejects_multiple_musicxml_part_lists(tmp_path: Path):
     score = tmp_path / "score.musicxml"
     score.write_bytes(
@@ -219,6 +241,24 @@ def test_validates_mxl_with_alternate_rootfile_renditions(tmp_path: Path):
     validate_score_file(score)
 
 
+def test_validates_mxl_with_standard_mimetype_and_tokenized_path(tmp_path: Path):
+    score = tmp_path / "score.mxl"
+    container = b"""<container><rootfiles>
+    <rootfile full-path="  score.musicxml\t"
+      media-type=" application/vnd.recordare.musicxml+xml "/>
+    </rootfiles></container>"""
+    with zipfile.ZipFile(score, "w") as archive:
+        archive.writestr(
+            "mimetype",
+            b"application/vnd.recordare.musicxml",
+            compress_type=zipfile.ZIP_STORED,
+        )
+        archive.writestr("META-INF/container.xml", container)
+        archive.writestr("score.musicxml", PARTWISE_XML)
+
+    validate_score_file(score)
+
+
 def test_rejects_mxl_with_high_ratio_extra_member(tmp_path: Path):
     score = tmp_path / "score.mxl"
     with zipfile.ZipFile(score, "w") as archive:
@@ -231,6 +271,89 @@ def test_rejects_mxl_with_high_ratio_extra_member(tmp_path: Path):
         )
 
     with pytest.raises(ScoreExportError, match="suspicious compression ratio"):
+        validate_score_file(score)
+
+
+@pytest.mark.parametrize(
+    "member_name",
+    ["../extra.bin", "/extra.bin", "C:/extra.bin", "dir\\extra.bin", "dir//extra.bin"],
+)
+def test_rejects_mxl_with_unsafe_member_paths(
+    tmp_path: Path,
+    member_name: str,
+):
+    score = tmp_path / "score.mxl"
+    with zipfile.ZipFile(score, "w") as archive:
+        archive.writestr("META-INF/container.xml", CONTAINER_XML)
+        archive.writestr("score.musicxml", PARTWISE_XML)
+        archive.writestr(member_name, b"extra")
+
+    with pytest.raises(ScoreExportError, match="unsafe member path"):
+        validate_score_file(score)
+
+
+@pytest.mark.parametrize(
+    ("container", "message"),
+    [
+        (
+            b"""<container><rootfiles><rootfile full-path="score.musicxml"
+            media-type="application/pdf"/></rootfiles></container>""",
+            "non-MusicXML media-type",
+        ),
+        (
+            b"""<container><rootfiles><rootfile full-path="score.musicxml">
+            unexpected</rootfile></rootfiles></container>""",
+            "invalid <rootfile>",
+        ),
+        (
+            b"""<container><rootfiles><rootfile full-path="score.musicxml"/></rootfiles>
+            <unexpected/></container>""",
+            "only one direct <rootfiles>",
+        ),
+    ],
+)
+def test_rejects_nonconforming_mxl_container_structure(
+    tmp_path: Path,
+    container: bytes,
+    message: str,
+):
+    score = tmp_path / "score.mxl"
+    _write_mxl(score, container=container)
+
+    with pytest.raises(ScoreExportError, match=message):
+        validate_score_file(score)
+
+
+@pytest.mark.parametrize(
+    ("first", "content", "compression", "message"),
+    [
+        (False, b"application/vnd.recordare.musicxml", zipfile.ZIP_STORED, "first"),
+        (True, b"wrong/type", zipfile.ZIP_STORED, "invalid content"),
+        (
+            True,
+            b"application/vnd.recordare.musicxml",
+            zipfile.ZIP_DEFLATED,
+            "without compression",
+        ),
+    ],
+)
+def test_rejects_invalid_mxl_mimetype(
+    tmp_path: Path,
+    first: bool,
+    content: bytes,
+    compression: int,
+    message: str,
+):
+    score = tmp_path / "score.mxl"
+    with zipfile.ZipFile(score, "w") as archive:
+        if not first:
+            archive.writestr("score.musicxml", PARTWISE_XML)
+        archive.writestr("mimetype", content, compress_type=compression)
+        archive.writestr("META-INF/container.xml", CONTAINER_XML)
+        if first:
+            archive.writestr("score.musicxml", PARTWISE_XML)
+
+    with pytest.raises(ScoreExportError, match=message):
         validate_score_file(score)
 
 

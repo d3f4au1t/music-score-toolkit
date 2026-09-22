@@ -562,6 +562,39 @@ def test_convert_score_rejects_missing_or_misordered_musicxml_structure(
     assert not list(tmp_path.glob(".music-score-*"))
 
 
+def test_convert_score_rejects_invalid_musicxml_ncname_id(
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "source.musicxml"
+    destination = tmp_path / "score.musicxml"
+    executable = tmp_path / "musescore"
+    source.write_bytes(VALID_MUSICXML)
+    destination.write_text("previous output")
+    make_executable(executable)
+
+    def write_invalid_score(command, *, check):
+        assert check is False
+        Path(command[-1]).write_bytes(
+            b"""<score-partwise>
+            <part-list><score-part id="1 bad"><part-name>Music</part-name></score-part></part-list>
+            <part id="1 bad"><measure number="1"/></part>
+            </score-partwise>"""
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "music_score_toolkit.tools.subprocess.run",
+        write_invalid_score,
+    )
+
+    with pytest.raises(RuntimeError, match="invalid id"):
+        convert_score(source, destination, musescore=executable)
+
+    assert destination.read_text() == "previous output"
+    assert not list(tmp_path.glob(".music-score-*"))
+
+
 def test_convert_score_accepts_mxl_with_alternate_rootfile_renditions(
     monkeypatch,
     tmp_path: Path,
@@ -630,6 +663,40 @@ def test_convert_score_rejects_mxl_with_high_ratio_extra_member(
     assert not list(tmp_path.glob(".music-score-*"))
 
 
+def test_convert_score_rejects_mxl_with_non_musicxml_primary_media_type(
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "source.musicxml"
+    destination = tmp_path / "score.mxl"
+    executable = tmp_path / "musescore"
+    source.write_bytes(VALID_MUSICXML)
+    destination.write_text("previous output")
+    make_executable(executable)
+
+    def write_invalid_container(command, *, check):
+        assert check is False
+        output = Path(command[-1])
+        container = b"""<container><rootfiles>
+        <rootfile full-path="score.musicxml" media-type="application/pdf"/>
+        </rootfiles></container>"""
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("META-INF/container.xml", container)
+            archive.writestr("score.musicxml", VALID_MUSICXML)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "music_score_toolkit.tools.subprocess.run",
+        write_invalid_container,
+    )
+
+    with pytest.raises(RuntimeError, match="non-MusicXML media-type"):
+        convert_score(source, destination, musescore=executable)
+
+    assert destination.read_text() == "previous output"
+    assert not list(tmp_path.glob(".music-score-*"))
+
+
 def test_convert_score_rejects_mxl_with_nested_decoy_rootfile(
     monkeypatch,
     tmp_path: Path,
@@ -657,7 +724,7 @@ def test_convert_score_rejects_mxl_with_nested_decoy_rootfile(
         write_ambiguous_container,
     )
 
-    with pytest.raises(RuntimeError, match="direct <rootfile>"):
+    with pytest.raises(RuntimeError, match="direct <rootfile"):
         convert_score(source, destination, musescore=executable)
 
     assert destination.read_text() == "previous output"

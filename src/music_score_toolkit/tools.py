@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import lzma
 import os
+import re
 import shutil
 import signal
 import stat
@@ -14,7 +15,7 @@ import zipfile
 import zlib
 from collections import Counter
 from collections.abc import Iterable
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 class ExecutableNotFoundError(FileNotFoundError):
@@ -45,6 +46,9 @@ _MAX_ZIP_COMPRESSION_RATIO = 500
 _MAX_MUSICXML_SIZE = 256 * 1024 * 1024
 _MAX_CONTAINER_XML_SIZE = 16 * 1024 * 1024
 _ZIP_READ_CHUNK_SIZE = 1024 * 1024
+_MUSICXML_MIMETYPE = b"application/vnd.recordare.musicxml"
+_MUSICXML_ROOTFILE_MEDIA_TYPE = "application/vnd.recordare.musicxml+xml"
+_XML_WHITESPACE_RE = re.compile(r"[ \t\r\n]+")
 
 
 class _ZipValidationError(ValueError):
@@ -73,10 +77,51 @@ def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+def _collapse_xml_token(value: str) -> str:
+    return _XML_WHITESPACE_RE.sub(" ", value).strip(" ")
+
+
+def _is_xml_ncname_start(character: str) -> bool:
+    codepoint = ord(character)
+    return (
+        character == "_"
+        or "A" <= character <= "Z"
+        or "a" <= character <= "z"
+        or 0xC0 <= codepoint <= 0xD6
+        or 0xD8 <= codepoint <= 0xF6
+        or 0xF8 <= codepoint <= 0x2FF
+        or 0x370 <= codepoint <= 0x37D
+        or 0x37F <= codepoint <= 0x1FFF
+        or 0x200C <= codepoint <= 0x200D
+        or 0x2070 <= codepoint <= 0x218F
+        or 0x2C00 <= codepoint <= 0x2FEF
+        or 0x3001 <= codepoint <= 0xD7FF
+        or 0xF900 <= codepoint <= 0xFDCF
+        or 0xFDF0 <= codepoint <= 0xFFFD
+        or 0x10000 <= codepoint <= 0xEFFFF
+    )
+
+
+def _is_xml_ncname(value: str) -> bool:
+    if not value or not _is_xml_ncname_start(value[0]):
+        return False
+    return all(
+        _is_xml_ncname_start(character)
+        or character in {"-", "."}
+        or "0" <= character <= "9"
+        or ord(character) == 0xB7
+        or 0x300 <= ord(character) <= 0x36F
+        or 0x203F <= ord(character) <= 0x2040
+        for character in value[1:]
+    )
+
+
 def _musicxml_ids(elements: list[ET.Element], *, label: str) -> list[str]:
-    identifiers = [element.get("id", "") for element in elements]
-    if any(not identifier for identifier in identifiers):
-        raise ValueError(f"MusicXML {label} has a missing or empty id")
+    identifiers = [
+        _collapse_xml_token(element.get("id", "")) for element in elements
+    ]
+    if any(not _is_xml_ncname(identifier) for identifier in identifiers):
+        raise ValueError(f"MusicXML {label} has a missing or invalid id")
     duplicates = [
         identifier
         for identifier, count in Counter(identifiers).items()
@@ -197,11 +242,51 @@ def _validated_zip_members(
         )
 
     members: dict[str, zipfile.ZipInfo] = {}
+    normalized_names: dict[str, str] = {}
     total_size = 0
     for info in infos:
         if info.filename in members:
             raise _ZipValidationError(
                 f"ZIP archive contains duplicate member {info.filename!r}"
+            )
+        raw_name = info.orig_filename
+        name = info.filename
+        if raw_name != name or not name:
+            raise _ZipValidationError(
+                f"ZIP archive contains an invalid member name {raw_name!r}"
+            )
+        if "\\" in name or any(ord(character) < 32 for character in name):
+            raise _ZipValidationError(
+                f"ZIP archive contains an unsafe member path {name!r}"
+            )
+        path_text = name.removesuffix("/")
+        parts = path_text.split("/")
+        if (
+            not path_text
+            or name.startswith("/")
+            or PurePosixPath(path_text).is_absolute()
+            or PureWindowsPath(path_text).drive
+            or any(part in {"", ".", ".."} for part in parts)
+        ):
+            raise _ZipValidationError(
+                f"ZIP archive contains an unsafe member path {name!r}"
+            )
+        previous = normalized_names.get(path_text)
+        if previous is not None:
+            raise _ZipValidationError(
+                f"ZIP archive contains colliding members {previous!r} and {name!r}"
+            )
+        normalized_names[path_text] = name
+
+        unix_mode = info.external_attr >> 16
+        file_type = stat.S_IFMT(unix_mode)
+        if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+            raise _ZipValidationError(
+                f"ZIP archive member {name!r} has an unsupported special-file type"
+            )
+        if (file_type == stat.S_IFDIR) != info.is_dir() and file_type != 0:
+            raise _ZipValidationError(
+                f"ZIP archive member {name!r} has inconsistent file metadata"
             )
         members[info.filename] = info
         if info.flag_bits & 0x1:
@@ -237,7 +322,44 @@ def _validated_zip_members(
             raise _ZipValidationError(
                 f"ZIP archive member {info.filename!r} has a suspicious compression ratio"
             )
+
+    for path_text, name in normalized_names.items():
+        parts = path_text.split("/")
+        for index in range(1, len(parts)):
+            ancestor_name = normalized_names.get("/".join(parts[:index]))
+            if ancestor_name is not None and not members[ancestor_name].is_dir():
+                raise _ZipValidationError(
+                    "ZIP archive contains a file/directory path collision between "
+                    f"{ancestor_name!r} and {name!r}"
+                )
     return members
+
+
+def _validate_mxl_package_members(
+    archive: zipfile.ZipFile,
+    members: dict[str, zipfile.ZipInfo],
+) -> None:
+    for info in members.values():
+        if info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+            raise _ZipValidationError(
+                f"MXL member {info.filename!r} uses an unsupported compression method"
+            )
+
+    mimetype = members.get("mimetype")
+    if mimetype is None:
+        return
+    if next(iter(members)) != "mimetype":
+        raise _ZipValidationError("MXL mimetype must be the first archive member")
+    if mimetype.compress_type != zipfile.ZIP_STORED or mimetype.extra:
+        raise _ZipValidationError(
+            "MXL mimetype must be stored without compression or extra fields"
+        )
+    if _read_zip_member(
+        archive,
+        mimetype,
+        maximum_size=len(_MUSICXML_MIMETYPE),
+    ) != _MUSICXML_MIMETYPE:
+        raise _ZipValidationError("MXL mimetype has invalid content")
 
 
 def _read_zip_member(
@@ -322,6 +444,7 @@ def _validate_mscz(path: Path) -> None:
 def _validate_mxl(path: Path) -> None:
     with zipfile.ZipFile(path) as archive:
         members = _validated_zip_members(archive)
+        _validate_mxl_package_members(archive, members)
         container_info = members.get(MUSICXML_CONTAINER)
         if container_info is None or container_info.is_dir():
             raise ValueError(f"MXL archive must contain one {MUSICXML_CONTAINER}")
@@ -334,6 +457,8 @@ def _validate_mxl(path: Path) -> None:
         )
         if _local_name(container.tag) != "container":
             raise ValueError("MXL container has an invalid root")
+        if container.attrib or len(container) != 1:
+            raise ValueError("MXL container must contain only one direct <rootfiles>")
         rootfiles_containers = [
             child for child in container if _local_name(child.tag) == "rootfiles"
         ]
@@ -349,13 +474,29 @@ def _validate_mxl(path: Path) -> None:
             for element in container.iter()
             if _local_name(element.tag) == "rootfile"
         ]
-        if not rootfiles or len(all_rootfiles) != len(rootfiles):
+        if (
+            rootfiles_containers[0].attrib
+            or len(rootfiles) != len(rootfiles_containers[0])
+            or not rootfiles
+            or len(all_rootfiles) != len(rootfiles)
+        ):
             raise ValueError(
                 "MXL container must contain valid direct <rootfile> entries only"
             )
         references: set[str] = set()
-        for rootfile in rootfiles:
-            reference = rootfile.get("full-path", "")
+        for index, rootfile in enumerate(rootfiles):
+            if (
+                list(rootfile)
+                or (rootfile.text or "").strip()
+                or set(rootfile.attrib) - {"full-path", "media-type"}
+            ):
+                raise ValueError("MXL container has an invalid <rootfile> element")
+            reference = _collapse_xml_token(rootfile.get("full-path", ""))
+            media_type = _collapse_xml_token(rootfile.get("media-type", ""))
+            if index == 0 and media_type not in {"", _MUSICXML_ROOTFILE_MEDIA_TYPE}:
+                raise ValueError(
+                    "MXL first rootfile has a non-MusicXML media-type"
+                )
             member_path = PurePosixPath(reference)
             try:
                 member_info = members[reference]
@@ -373,7 +514,7 @@ def _validate_mxl(path: Path) -> None:
                     f"MXL container references an invalid rootfile {reference!r}"
                 )
             references.add(reference)
-        first_rootfile = rootfiles[0].get("full-path", "")
+        first_rootfile = _collapse_xml_token(rootfiles[0].get("full-path", ""))
         _validate_musicxml_root(
             ET.fromstring(
                 _read_zip_member(

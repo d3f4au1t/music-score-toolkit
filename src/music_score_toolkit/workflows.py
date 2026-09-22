@@ -16,7 +16,11 @@ from pathlib import Path, PurePosixPath
 from .tools import (
     _MAX_CONTAINER_XML_SIZE,
     _MAX_MUSICXML_SIZE,
+    _MUSICXML_ROOTFILE_MEDIA_TYPE,
+    _collapse_xml_token,
+    _is_xml_ncname,
     _read_zip_member,
+    _validate_mxl_package_members,
     _validated_zip_members,
     _ZipValidationError,
     convert_score,
@@ -62,9 +66,11 @@ def _musicxml_ids(
     label: str,
     source: Path,
 ) -> list[str]:
-    identifiers = [element.get("id", "") for element in elements]
-    if any(not identifier for identifier in identifiers):
-        raise ScoreExportError(f"MusicXML {label} has a missing or empty id: {source}")
+    identifiers = [
+        _collapse_xml_token(element.get("id", "")) for element in elements
+    ]
+    if any(not _is_xml_ncname(identifier) for identifier in identifiers):
+        raise ScoreExportError(f"MusicXML {label} has a missing or invalid id: {source}")
     duplicates = [
         identifier
         for identifier, count in Counter(identifiers).items()
@@ -171,6 +177,7 @@ def _validate_mxl(path: Path) -> None:
     try:
         with zipfile.ZipFile(path) as archive:
             members = _validated_zip_members(archive)
+            _validate_mxl_package_members(archive, members)
             container_info = members.get(MUSICXML_CONTAINER)
             if container_info is None or container_info.is_dir():
                 raise ScoreExportError(
@@ -188,6 +195,10 @@ def _validate_mxl(path: Path) -> None:
                 raise ScoreExportError(f"Invalid MusicXML container in {path}: {exc}") from exc
             if _local_name(container.tag) != "container":
                 raise ScoreExportError(f"Invalid MusicXML container root in {path}.")
+            if container.attrib or len(container) != 1:
+                raise ScoreExportError(
+                    f"MusicXML container must contain only one direct <rootfiles>: {path}"
+                )
 
             rootfiles_containers = [
                 child for child in container if _local_name(child.tag) == "rootfiles"
@@ -206,14 +217,36 @@ def _validate_mxl(path: Path) -> None:
                 for element in container.iter()
                 if _local_name(element.tag) == "rootfile"
             ]
-            if not rootfiles or len(all_rootfiles) != len(rootfiles):
+            if (
+                rootfiles_containers[0].attrib
+                or len(rootfiles) != len(rootfiles_containers[0])
+                or not rootfiles
+                or len(all_rootfiles) != len(rootfiles)
+            ):
                 raise ScoreExportError(
                     "MusicXML container must contain valid direct <rootfile> "
                     f"entries only: {path}"
                 )
             references: set[str] = set()
-            for rootfile in rootfiles:
-                root_path = rootfile.get("full-path", "")
+            for index, rootfile in enumerate(rootfiles):
+                if (
+                    list(rootfile)
+                    or (rootfile.text or "").strip()
+                    or set(rootfile.attrib) - {"full-path", "media-type"}
+                ):
+                    raise ScoreExportError(
+                        f"MusicXML container has an invalid <rootfile>: {path}"
+                    )
+                root_path = _collapse_xml_token(rootfile.get("full-path", ""))
+                media_type = _collapse_xml_token(rootfile.get("media-type", ""))
+                if index == 0 and media_type not in {
+                    "",
+                    _MUSICXML_ROOTFILE_MEDIA_TYPE,
+                }:
+                    raise ScoreExportError(
+                        "MusicXML first rootfile has a non-MusicXML media-type: "
+                        f"{path}"
+                    )
                 member_path = PurePosixPath(root_path)
                 try:
                     member_info = members[root_path]
@@ -232,7 +265,9 @@ def _validate_mxl(path: Path) -> None:
                         f"{root_path!r}: {path}"
                     )
                 references.add(root_path)
-            first_root_path = rootfiles[0].get("full-path", "")
+            first_root_path = _collapse_xml_token(
+                rootfiles[0].get("full-path", "")
+            )
             _parse_musicxml(
                 _read_zip_member(
                     archive,
