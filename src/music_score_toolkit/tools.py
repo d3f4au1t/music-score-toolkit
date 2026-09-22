@@ -15,7 +15,7 @@ import zipfile
 import zlib
 from collections import Counter
 from collections.abc import Iterable
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath
 
 
 class ExecutableNotFoundError(FileNotFoundError):
@@ -265,7 +265,11 @@ def _validated_zip_members(
             not path_text
             or name.startswith("/")
             or PurePosixPath(path_text).is_absolute()
-            or PureWindowsPath(path_text).drive
+            or (
+                len(path_text) >= 3
+                and path_text[0].isalpha()
+                and path_text[1:3] == ":/"
+            )
             or any(part in {"", ".", ".."} for part in parts)
         ):
             raise _ZipValidationError(
@@ -348,8 +352,6 @@ def _validate_mxl_package_members(
     mimetype = members.get("mimetype")
     if mimetype is None:
         return
-    if next(iter(members)) != "mimetype":
-        raise _ZipValidationError("MXL mimetype must be the first archive member")
     if mimetype.compress_type != zipfile.ZIP_STORED or mimetype.extra:
         raise _ZipValidationError(
             "MXL mimetype must be stored without compression or extra fields"

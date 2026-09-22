@@ -259,6 +259,21 @@ def test_validates_mxl_with_standard_mimetype_and_tokenized_path(tmp_path: Path)
     validate_score_file(score)
 
 
+def test_validates_mxl_with_recommended_mimetype_out_of_order(tmp_path: Path):
+    score = tmp_path / "score.mxl"
+    with zipfile.ZipFile(score, "w") as archive:
+        archive.writestr("C:maj.txt", b"valid POSIX member name")
+        archive.writestr(
+            "mimetype",
+            b"application/vnd.recordare.musicxml",
+            compress_type=zipfile.ZIP_STORED,
+        )
+        archive.writestr("META-INF/container.xml", CONTAINER_XML)
+        archive.writestr("score.musicxml", PARTWISE_XML)
+
+    validate_score_file(score)
+
+
 def test_rejects_mxl_with_high_ratio_extra_member(tmp_path: Path):
     score = tmp_path / "score.mxl"
     with zipfile.ZipFile(score, "w") as archive:
@@ -325,12 +340,10 @@ def test_rejects_nonconforming_mxl_container_structure(
 
 
 @pytest.mark.parametrize(
-    ("first", "content", "compression", "message"),
+    ("content", "compression", "message"),
     [
-        (False, b"application/vnd.recordare.musicxml", zipfile.ZIP_STORED, "first"),
-        (True, b"wrong/type", zipfile.ZIP_STORED, "invalid content"),
+        (b"wrong/type", zipfile.ZIP_STORED, "invalid content"),
         (
-            True,
             b"application/vnd.recordare.musicxml",
             zipfile.ZIP_DEFLATED,
             "without compression",
@@ -339,19 +352,15 @@ def test_rejects_nonconforming_mxl_container_structure(
 )
 def test_rejects_invalid_mxl_mimetype(
     tmp_path: Path,
-    first: bool,
     content: bytes,
     compression: int,
     message: str,
 ):
     score = tmp_path / "score.mxl"
     with zipfile.ZipFile(score, "w") as archive:
-        if not first:
-            archive.writestr("score.musicxml", PARTWISE_XML)
         archive.writestr("mimetype", content, compress_type=compression)
         archive.writestr("META-INF/container.xml", CONTAINER_XML)
-        if first:
-            archive.writestr("score.musicxml", PARTWISE_XML)
+        archive.writestr("score.musicxml", PARTWISE_XML)
 
     with pytest.raises(ScoreExportError, match=message):
         validate_score_file(score)
