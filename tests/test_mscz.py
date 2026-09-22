@@ -757,6 +757,96 @@ def test_preserves_comments_and_processing_instructions_inside_score():
     assert b"<?proof keep?>" in rendered
 
 
+def test_preserves_document_level_comments_and_processing_instructions():
+    xml = b"""<?xml version="1.0"?><?pre?><!--before--><museScore>
+    <Score><Note><pitch>60</pitch><tpc>14</tpc></Note></Score>
+    </museScore><!--after--><?post done?>"""
+
+    rendered, _ = transpose_mscx(xml, "C", "D")
+
+    markers = [b"<?pre?>", b"<!--before-->", b"<museScore", b"<!--after-->", b"<?post done?>"]
+    assert all(marker in rendered for marker in markers)
+    assert [rendered.index(marker) for marker in markers] == sorted(
+        rendered.index(marker) for marker in markers
+    )
+    assert ET.fromstring(rendered).findtext(".//pitch") == "62"
+
+
+def test_changed_utf16_document_is_rewritten_as_valid_utf8_with_envelope():
+    text = """<?xml version="1.0" encoding="UTF-16"?>
+    <!--préface--><museScore><Score><metaTag>café</metaTag>
+    <Note><pitch>60</pitch><tpc>14</tpc></Note></Score></museScore><!--après-->"""
+
+    rendered, _ = transpose_mscx(text.encode("utf-16"), "C", "D")
+    root = ET.fromstring(rendered)
+
+    assert rendered.startswith(b"<?xml version='1.0' encoding='utf-8'?>")
+    assert b"pr\xc3\xa9face" in rendered
+    assert b"apr\xc3\xa8s" in rendered
+    assert root.findtext(".//metaTag") == "café"
+    assert root.findtext(".//pitch") == "62"
+
+
+def test_changed_document_preserves_xml_version_and_standalone_declaration():
+    xml = b"""<?xml version="1.1" encoding="UTF-8" standalone="yes"?>
+    <museScore><Score><Note><pitch>60</pitch><tpc>14</tpc></Note></Score></museScore>"""
+
+    rendered, _ = transpose_mscx(xml, "C", "D")
+
+    assert rendered.startswith(
+        b"<?xml version='1.1' encoding='utf-8' standalone='yes'?>"
+    )
+    assert ET.fromstring(rendered).findtext(".//pitch") == "62"
+
+
+@pytest.mark.parametrize("declared_encoding", ["ISO-8859-1", "UTF-16"])
+def test_string_no_op_normalizes_encoding_declaration_to_utf8(
+    declared_encoding: str,
+):
+    xml = f"""<?xml version='1.0' encoding='{declared_encoding}'?>
+    <museScore><Score><metaTag>café</metaTag></Score></museScore>"""
+
+    rendered, report = transpose_mscx(xml, "C", "C")
+
+    assert b"encoding='utf-8'" in rendered
+    assert ET.fromstring(rendered).findtext(".//metaTag") == "café"
+    assert report.score_entries_changed == 0
+
+
+def test_changed_document_without_declaration_does_not_gain_one():
+    xml = b"<museScore><Score><Note><pitch>60</pitch><tpc>14</tpc></Note></Score></museScore>"
+
+    rendered, _ = transpose_mscx(xml, "C", "D")
+
+    assert not rendered.startswith(b"<?xml")
+    assert ET.fromstring(rendered).findtext(".//pitch") == "62"
+
+
+def test_doctype_score_is_preserved_on_no_op_and_rejected_on_change():
+    xml = b"""<?xml version="1.0"?><!DOCTYPE museScore SYSTEM "score.dtd">
+    <museScore><Score><Note><pitch>60</pitch><tpc>14</tpc></Note></Score></museScore>"""
+
+    unchanged, _ = transpose_mscx(xml, "C", "C")
+    assert unchanged == xml
+
+    with pytest.raises(ScoreFormatError, match="DOCTYPE"):
+        transpose_mscx(xml, "C", "D")
+
+
+def test_excessive_xml_depth_is_reported_instead_of_escaping_recursion_error():
+    depth = 1200
+    xml = (
+        "<museScore><Score>"
+        + ("<layer>" * depth)
+        + "<Note><pitch>60</pitch><tpc>14</tpc></Note>"
+        + ("</layer>" * depth)
+        + "</Score></museScore>"
+    )
+
+    with pytest.raises(ScoreFormatError, match="serialize MSCX"):
+        transpose_mscx(xml, "C", "D")
+
+
 def test_rejects_pitch_and_tpc_that_disagree():
     xml = b"<museScore><Score><Note><pitch>60</pitch><tpc>15</tpc></Note></Score></museScore>"
 

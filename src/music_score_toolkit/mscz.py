@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import lzma
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -65,6 +66,17 @@ class _OpeningKey:
     has_measure: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class _MscxDocument:
+    root: ET.Element
+    prolog: tuple[ET.Element, ...]
+    epilog: tuple[ET.Element, ...]
+    has_xml_declaration: bool
+    xml_version: str
+    standalone: str | None
+    has_doctype: bool
+
+
 _ACCIDENTAL_TO_ALTERATION = {
     "accidentalTripleFlat": -3,
     "accidentalDoubleFlat": -2,
@@ -122,6 +134,75 @@ _ARCHIVE_READ_ERRORS = (
     zipfile.LargeZipFile,
     zlib.error,
 )
+
+_XML_DECLARATION_RE = re.compile(
+    r"\A\ufeff?[ \t\r\n]*<\?xml\b.*?\?>",
+    flags=re.DOTALL,
+)
+_XML_ENCODING_RE = re.compile(
+    r"(\bencoding\s*=\s*)(['\"])[^'\"]*\2",
+    flags=re.IGNORECASE,
+)
+_XML_VERSION_RE = re.compile(
+    r"\bversion\s*=\s*(['\"])([^'\"]+)\1",
+    flags=re.IGNORECASE,
+)
+_XML_STANDALONE_RE = re.compile(
+    r"\bstandalone\s*=\s*(['\"])(yes|no)\1",
+    flags=re.IGNORECASE,
+)
+
+
+class _MscxTreeBuilder:
+    """Build an ElementTree while retaining document-level comments and PIs."""
+
+    def __init__(self) -> None:
+        self._builder = ET.TreeBuilder(insert_comments=True, insert_pis=True)
+        self._depth = 0
+        self._root_closed = False
+        self.prolog: list[ET.Element] = []
+        self.epilog: list[ET.Element] = []
+        self.has_doctype = False
+
+    def start(self, tag: str, attributes: dict[str, str]) -> ET.Element:
+        self._depth += 1
+        return self._builder.start(tag, attributes)
+
+    def end(self, tag: str) -> ET.Element:
+        element = self._builder.end(tag)
+        self._depth -= 1
+        if self._depth == 0:
+            self._root_closed = True
+        return element
+
+    def data(self, data: str) -> None:
+        self._builder.data(data)
+
+    def comment(self, text: str) -> None:
+        if self._depth:
+            self._builder.comment(text)
+            return
+        destination = self.epilog if self._root_closed else self.prolog
+        destination.append(ET.Comment(text))
+
+    def pi(self, target: str, text: str) -> None:
+        if self._depth:
+            self._builder.pi(target, text)
+            return
+        destination = self.epilog if self._root_closed else self.prolog
+        destination.append(ET.ProcessingInstruction(target, text))
+
+    def doctype(
+        self,
+        name: str,
+        public_id: str | None,
+        system_id: str | None,
+    ) -> None:
+        del name, public_id, system_id
+        self.has_doctype = True
+
+    def close(self) -> ET.Element:
+        return self._builder.close()
 
 
 def _read_tpc(note: ET.Element, field_name: str) -> tuple[ET.Element | None, int | None]:
@@ -244,11 +325,60 @@ def _score_contexts(
     return contexts
 
 
-def _parse_mscx(content: bytes | str) -> ET.Element:
+def _xml_prefix(content: bytes | str) -> str:
+    if isinstance(content, str):
+        return content[:4096]
+
+    sample = content[:16384]
+    encodings = (
+        (b"\xff\xfe\x00\x00", "utf-32"),
+        (b"\x00\x00\xfe\xff", "utf-32"),
+        (b"\xef\xbb\xbf", "utf-8-sig"),
+        (b"\xff\xfe", "utf-16"),
+        (b"\xfe\xff", "utf-16"),
+        (b"\x00\x00\x00<", "utf-32-be"),
+        (b"<\x00\x00\x00", "utf-32-le"),
+        (b"\x00<\x00?", "utf-16-be"),
+        (b"<\x00?\x00", "utf-16-le"),
+    )
+    encoding = next(
+        (name for signature, name in encodings if sample.startswith(signature)),
+        "ascii",
+    )
+    return sample.decode(encoding, errors="ignore")
+
+
+def _xml_declaration_fields(
+    content: bytes | str,
+) -> tuple[bool, str, str | None]:
+    declaration = _XML_DECLARATION_RE.match(_xml_prefix(content))
+    if declaration is None:
+        return False, "1.0", None
+    version_match = _XML_VERSION_RE.search(declaration.group(0))
+    standalone_match = _XML_STANDALONE_RE.search(declaration.group(0))
+    version = version_match.group(2) if version_match is not None else "1.0"
+    standalone = standalone_match.group(2).lower() if standalone_match is not None else None
+    return True, version, standalone
+
+
+def _encode_xml_text(content: str) -> bytes:
+    declaration = _XML_DECLARATION_RE.match(content)
+    if declaration is None:
+        return content.encode("utf-8")
+    normalized = _XML_ENCODING_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}utf-8{match.group(2)}",
+        declaration.group(0),
+        count=1,
+    )
+    return (normalized + content[declaration.end() :]).encode("utf-8")
+
+
+def _parse_mscx(content: bytes | str) -> _MscxDocument:
+    target = _MscxTreeBuilder()
     try:
-        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
+        parser = ET.XMLParser(target=target)
         root = ET.fromstring(content, parser=parser)
-    except (ET.ParseError, LookupError, ValueError) as exc:
+    except (ET.ParseError, LookupError, RecursionError, ValueError) as exc:
         raise ScoreFormatError(f"Invalid MSCX XML: {exc}") from exc
 
     if root.tag != "museScore":
@@ -258,7 +388,40 @@ def _parse_mscx(content: bytes | str) -> ET.Element:
         raise ScoreFormatError(
             "Invalid MSCX XML: <museScore> must contain exactly one direct <Score>."
         )
-    return root
+    has_declaration, xml_version, standalone = _xml_declaration_fields(content)
+    return _MscxDocument(
+        root=root,
+        prolog=tuple(target.prolog),
+        epilog=tuple(target.epilog),
+        has_xml_declaration=has_declaration,
+        xml_version=xml_version,
+        standalone=standalone,
+        has_doctype=target.has_doctype,
+    )
+
+
+def _render_mscx(document: _MscxDocument) -> bytes:
+    if document.has_doctype:
+        raise ScoreFormatError(
+            "MSCX documents with a DOCTYPE cannot be rewritten safely; "
+            "no output was written."
+        )
+    try:
+        body = b"".join(
+            ET.tostring(element, encoding="utf-8", xml_declaration=False)
+            for element in (*document.prolog, document.root, *document.epilog)
+        )
+    except (LookupError, RecursionError, ValueError) as exc:
+        raise ScoreFormatError(f"Unable to serialize MSCX XML safely: {exc}") from exc
+    if document.has_xml_declaration:
+        standalone = (
+            f" standalone='{document.standalone}'" if document.standalone is not None else ""
+        )
+        declaration = (
+            f"<?xml version='{document.xml_version}' encoding='utf-8'{standalone}?>\n"
+        ).encode("ascii")
+        return declaration + body
+    return body
 
 
 def _key_signature_kind(key_signature: ET.Element) -> str:
@@ -976,7 +1139,8 @@ def transpose_mscx(
     target_key = normalize_conventional_key(to_key)
     shift = calculate_shift(source_key, target_key)
     note_tpc_shift = calculate_tpc_shift(source_key, target_key)
-    root = _parse_mscx(content)
+    document = _parse_mscx(content)
+    root = document.root
     score_contexts = _score_contexts(root, concert_pitch)
     if validate_source_key:
         _validate_source_key(score_contexts, source_key)
@@ -1069,7 +1233,7 @@ def transpose_mscx(
                     key_signature_count += 1
 
     if note_count == 0 and key_signature_count == 0 and harmony_count == 0:
-        original = content if isinstance(content, bytes) else content.encode("utf-8")
+        original = content if isinstance(content, bytes) else _encode_xml_text(content)
         return original, TransposeReport(
             from_key=source_key,
             to_key=target_key,
@@ -1080,12 +1244,7 @@ def transpose_mscx(
             chord_symbols_changed=0,
         )
 
-    had_declaration = (
-        content.lstrip().startswith(b"<?xml")
-        if isinstance(content, bytes)
-        else content.lstrip().startswith("<?xml")
-    )
-    rendered = ET.tostring(root, encoding="utf-8", xml_declaration=had_declaration)
+    rendered = _render_mscx(document)
     return rendered, TransposeReport(
         from_key=source_key,
         to_key=target_key,
