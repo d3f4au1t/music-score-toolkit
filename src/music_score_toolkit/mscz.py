@@ -536,8 +536,13 @@ def _staff_group(definition: ET.Element | None, instrument: ET.Element | None) -
 
 
 def _staff_scopes(score: ET.Element) -> list[_StaffScope]:
-    definitions: list[tuple[str | None, ET.Element, ET.Element | None, str]] = []
-    definitions_by_id: dict[str, tuple[ET.Element, ET.Element | None, str]] = {}
+    definitions: list[
+        tuple[str | None, bool, ET.Element, ET.Element | None, str]
+    ] = []
+    definitions_by_id: dict[
+        str,
+        tuple[int, ET.Element, ET.Element | None, str],
+    ] = {}
     for part in score.findall("Part"):
         instrument = part.find("Instrument")
         preference = part.findtext("preferSharpFlat", "").strip().lower()
@@ -545,16 +550,31 @@ def _staff_scopes(score: ET.Element) -> list[_StaffScope]:
             preference = "auto"
         part_staves = part.findall("Staff")
         for definition in part_staves:
-            staff_id = definition.get("id")
+            explicit_staff_id = definition.get("id")
+            staff_id = explicit_staff_id
             if staff_id is None and len(part_staves) == 1:
                 staff_id = part.get("id")
-            definitions.append((staff_id, definition, instrument, preference))
+            definition_index = len(definitions)
+            definitions.append(
+                (
+                    staff_id,
+                    explicit_staff_id is None,
+                    definition,
+                    instrument,
+                    preference,
+                )
+            )
             if staff_id is not None:
                 if staff_id in definitions_by_id:
                     raise ScoreFormatError(
                         f"Invalid MSCX XML: duplicate staff definition id {staff_id!r}."
                     )
-                definitions_by_id[staff_id] = (definition, instrument, preference)
+                definitions_by_id[staff_id] = (
+                    definition_index,
+                    definition,
+                    instrument,
+                    preference,
+                )
 
     content_staves = score.findall("Staff")
     content_ids = [staff.get("id") for staff in content_staves if staff.get("id")]
@@ -565,22 +585,34 @@ def _staff_scopes(score: ET.Element) -> list[_StaffScope]:
         )
 
     scopes: list[_StaffScope] = []
+    used_definitions: set[int] = set()
     for index, content in enumerate(content_staves):
         content_id = content.get("id")
         match = definitions_by_id.get(content_id or "")
-        if content_id is not None and definitions and match is None:
+        if match is not None:
+            definition_index, definition, instrument, preference = match
+        elif index < len(definitions) and (
+            definitions[index][1] or content_id is None
+        ):
+            definition_index = index
+            _, _, definition, instrument, preference = definitions[index]
+        elif definitions:
             raise ScoreFormatError(
                 f"Invalid MSCX XML: score staff id {content_id!r} has no matching "
                 "staff definition."
             )
-        if match is None and content_id is None and index < len(definitions):
-            _, definition, instrument, preference = definitions[index]
-        elif match is None:
+        else:
+            definition_index = None
             definition = content
             instrument = None
             preference = "auto"
-        else:
-            definition, instrument, preference = match
+        if definition_index is not None:
+            if definition_index in used_definitions:
+                raise ScoreFormatError(
+                    "Invalid MSCX XML: multiple score staves map to the same staff "
+                    "definition."
+                )
+            used_definitions.add(definition_index)
         scopes.append(
             _StaffScope(
                 content=content,
