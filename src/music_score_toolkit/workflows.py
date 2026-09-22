@@ -84,11 +84,33 @@ def _validate_musicxml_root(root: ET.Element, *, source: Path) -> None:
             f"MusicXML score must contain one populated <part-list>: {source}"
         )
     part_list = part_lists[0]
+    body_name = "part" if root_name == "score-partwise" else "measure"
+    if any(
+        _local_name(child.tag) == body_name
+        for child in children[: children.index(part_list)]
+    ):
+        raise ScoreExportError(
+            f"MusicXML <part-list> must precede all <{body_name}> elements: {source}"
+        )
     score_parts = [
         child for child in part_list if _local_name(child.tag) == "score-part"
     ]
     if not score_parts:
         raise ScoreExportError(f"MusicXML score has no populated <part-list>: {source}")
+    if any(
+        len(
+            [
+                child
+                for child in score_part
+                if _local_name(child.tag) == "part-name"
+            ]
+        )
+        != 1
+        for score_part in score_parts
+    ):
+        raise ScoreExportError(
+            f"MusicXML <score-part> must contain one direct <part-name>: {source}"
+        )
     declared_ids = _musicxml_ids(
         score_parts,
         label="<score-part>",
@@ -103,9 +125,12 @@ def _validate_musicxml_root(root: ET.Element, *, source: Path) -> None:
                 "MusicXML <part> IDs do not match <score-part> declarations: "
                 f"{source}"
             )
-        has_music = bool(parts) and all(
-            any(_local_name(child.tag) == "measure" for child in part) for part in parts
-        )
+        measures_by_part = [
+            [child for child in part if _local_name(child.tag) == "measure"]
+            for part in parts
+        ]
+        has_music = bool(parts) and all(measures_by_part)
+        measures = [measure for group in measures_by_part for measure in group]
     else:
         measures = [child for child in children if _local_name(child.tag) == "measure"]
         has_music = bool(measures)
@@ -117,6 +142,10 @@ def _validate_musicxml_root(root: ET.Element, *, source: Path) -> None:
                     "MusicXML measure <part> IDs do not match <score-part> "
                     f"declarations: {source}"
                 )
+    if any("number" not in measure.attrib for measure in measures):
+        raise ScoreExportError(
+            f"MusicXML <measure> is missing its required number: {source}"
+        )
     if not has_music:
         raise ScoreExportError(f"MusicXML score has an incomplete part/measure structure: {source}")
 

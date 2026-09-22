@@ -30,7 +30,10 @@ MISMATCHED_MUSICXML = b"""<?xml version="1.0"?>
 </score-partwise>
 """
 REORDERED_MUSICXML = b"""<score-partwise>
-  <part-list><score-part id="P1"/><score-part id="P2"/></part-list>
+  <part-list>
+    <score-part id="P1"><part-name>One</part-name></score-part>
+    <score-part id="P2"><part-name>Two</part-name></score-part>
+  </part-list>
   <part id="P2"><measure number="1"/></part>
   <part id="P1"><measure number="1"/></part>
 </score-partwise>
@@ -497,6 +500,62 @@ def test_convert_score_rejects_multiple_musicxml_part_lists(
     )
 
     with pytest.raises(RuntimeError, match="one populated <part-list>"):
+        convert_score(source, destination, musescore=executable)
+
+    assert destination.read_text() == "previous output"
+    assert not list(tmp_path.glob(".music-score-*"))
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            b"""<score-partwise>
+            <part-list><score-part id="P1"/></part-list>
+            <part id="P1"><measure number="1"/></part>
+            </score-partwise>""",
+            "part-name",
+        ),
+        (
+            b"""<score-partwise>
+            <part-list><score-part id="P1"><part-name>One</part-name></score-part></part-list>
+            <part id="P1"><measure/></part>
+            </score-partwise>""",
+            "required number",
+        ),
+        (
+            b"""<score-partwise>
+            <part id="P1"><measure number="1"/></part>
+            <part-list><score-part id="P1"><part-name>One</part-name></score-part></part-list>
+            </score-partwise>""",
+            "must precede",
+        ),
+    ],
+)
+def test_convert_score_rejects_missing_or_misordered_musicxml_structure(
+    monkeypatch,
+    tmp_path: Path,
+    payload: bytes,
+    message: str,
+):
+    source = tmp_path / "source.musicxml"
+    destination = tmp_path / "score.musicxml"
+    executable = tmp_path / "musescore"
+    source.write_bytes(VALID_MUSICXML)
+    destination.write_text("previous output")
+    make_executable(executable)
+
+    def write_invalid_score(command, *, check):
+        assert check is False
+        Path(command[-1]).write_bytes(payload)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "music_score_toolkit.tools.subprocess.run",
+        write_invalid_score,
+    )
+
+    with pytest.raises(RuntimeError, match=message):
         convert_score(source, destination, musescore=executable)
 
     assert destination.read_text() == "previous output"

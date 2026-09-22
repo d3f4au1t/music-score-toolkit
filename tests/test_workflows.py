@@ -31,7 +31,10 @@ TIMEWISE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 """
 
 REORDERED_PARTWISE_XML = b"""<score-partwise>
-  <part-list><score-part id="P1"/><score-part id="P2"/></part-list>
+  <part-list>
+    <score-part id="P1"><part-name>One</part-name></score-part>
+    <score-part id="P2"><part-name>Two</part-name></score-part>
+  </part-list>
   <part id="P2"><measure number="1"/></part>
   <part id="P1"><measure number="1"/></part>
 </score-partwise>
@@ -82,24 +85,27 @@ def test_validates_bundled_smartscore_musicxml():
     "payload",
     [
         b"""<score-partwise>
-        <part-list><score-part id="P1"/></part-list>
+        <part-list><score-part id="P1"><part-name>One</part-name></score-part></part-list>
         <part id="P2"><measure number="1"/></part>
         </score-partwise>""",
         b"""<score-partwise>
-        <part-list><score-part id="P1"/></part-list>
+        <part-list><score-part id="P1"><part-name>One</part-name></score-part></part-list>
         <part id="P1"><measure number="1"/></part>
         <part id="P2"><measure number="1"/></part>
         </score-partwise>""",
         b"""<score-partwise>
-        <part-list><score-part id="P1"/><score-part id="P1"/></part-list>
+        <part-list>
+        <score-part id="P1"><part-name>One</part-name></score-part>
+        <score-part id="P1"><part-name>Two</part-name></score-part>
+        </part-list>
         <part id="P1"><measure number="1"/></part>
         </score-partwise>""",
         b"""<score-partwise>
-        <part-list><score-part/></part-list>
+        <part-list><score-part><part-name>One</part-name></score-part></part-list>
         <part><measure number="1"/></part>
         </score-partwise>""",
         b"""<score-timewise>
-        <part-list><score-part id="P1"/></part-list>
+        <part-list><score-part id="P1"><part-name>One</part-name></score-part></part-list>
         <measure number="1"><part id="P2"/></measure>
         </score-timewise>""",
     ],
@@ -126,6 +132,44 @@ def test_rejects_multiple_musicxml_part_lists(tmp_path: Path):
     )
 
     with pytest.raises(ScoreExportError, match="one populated <part-list>"):
+        validate_score_file(score)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            b"""<score-partwise>
+            <part-list><score-part id="P1"/></part-list>
+            <part id="P1"><measure number="1"/></part>
+            </score-partwise>""",
+            "part-name",
+        ),
+        (
+            b"""<score-partwise>
+            <part-list><score-part id="P1"><part-name>One</part-name></score-part></part-list>
+            <part id="P1"><measure/></part>
+            </score-partwise>""",
+            "required number",
+        ),
+        (
+            b"""<score-partwise>
+            <part id="P1"><measure number="1"/></part>
+            <part-list><score-part id="P1"><part-name>One</part-name></score-part></part-list>
+            </score-partwise>""",
+            "must precede",
+        ),
+    ],
+)
+def test_rejects_missing_or_misordered_required_musicxml_structure(
+    tmp_path: Path,
+    payload: bytes,
+    message: str,
+):
+    score = tmp_path / "score.musicxml"
+    score.write_bytes(payload)
+
+    with pytest.raises(ScoreExportError, match=message):
         validate_score_file(score)
 
 
