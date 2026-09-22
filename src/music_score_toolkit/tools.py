@@ -81,6 +81,11 @@ def _collapse_xml_token(value: str) -> str:
     return _XML_WHITESPACE_RE.sub(" ", value).strip(" ")
 
 
+def _is_musicxml_rootfile_media_type(value: str) -> bool:
+    essence = value.partition(";")[0].strip().casefold()
+    return not essence or essence == _MUSICXML_ROOTFILE_MEDIA_TYPE
+
+
 def _is_xml_ncname_start(character: str) -> bool:
     codepoint = ord(character)
     return (
@@ -495,7 +500,7 @@ def _validate_mxl(path: Path) -> None:
                 raise ValueError("MXL container has an invalid <rootfile> element")
             reference = _collapse_xml_token(rootfile.get("full-path", ""))
             media_type = _collapse_xml_token(rootfile.get("media-type", ""))
-            if index == 0 and media_type not in {"", _MUSICXML_ROOTFILE_MEDIA_TYPE}:
+            if index == 0 and not _is_musicxml_rootfile_media_type(media_type):
                 raise ValueError(
                     "MXL first rootfile has a non-MusicXML media-type"
                 )

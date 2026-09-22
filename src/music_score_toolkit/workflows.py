@@ -16,8 +16,8 @@ from pathlib import Path, PurePosixPath
 from .tools import (
     _MAX_CONTAINER_XML_SIZE,
     _MAX_MUSICXML_SIZE,
-    _MUSICXML_ROOTFILE_MEDIA_TYPE,
     _collapse_xml_token,
+    _is_musicxml_rootfile_media_type,
     _is_xml_ncname,
     _read_zip_member,
     _validate_mxl_package_members,
@@ -239,10 +239,7 @@ def _validate_mxl(path: Path) -> None:
                     )
                 root_path = _collapse_xml_token(rootfile.get("full-path", ""))
                 media_type = _collapse_xml_token(rootfile.get("media-type", ""))
-                if index == 0 and media_type not in {
-                    "",
-                    _MUSICXML_ROOTFILE_MEDIA_TYPE,
-                }:
+                if index == 0 and not _is_musicxml_rootfile_media_type(media_type):
                     raise ScoreExportError(
                         "MusicXML first rootfile has a non-MusicXML media-type: "
                         f"{path}"

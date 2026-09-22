@@ -245,7 +245,7 @@ def test_validates_mxl_with_standard_mimetype_and_tokenized_path(tmp_path: Path)
     score = tmp_path / "score.mxl"
     container = b"""<container><rootfiles>
     <rootfile full-path="  score.musicxml\t"
-      media-type=" application/vnd.recordare.musicxml+xml "/>
+      media-type=" Application/Vnd.Recordare.Musicxml+Xml; charset=UTF-8 "/>
     </rootfiles></container>"""
     with zipfile.ZipFile(score, "w") as archive:
         archive.writestr(
