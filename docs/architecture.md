@@ -40,8 +40,9 @@ TPC values move along MuseScore's line-of-fifths representation instead of
 being regenerated from MIDI pitch alone. This preserves enharmonic intent,
 including zero-semitone respellings such as C-sharp to D-flat. Existing
 accidental nodes keep their role, bracket, EID, and layout metadata; unknown
-microtonal subtypes are left unchanged. MuseScore 4's double-accidental limit
-is applied when an interval would otherwise create a triple accidental.
+microtonal subtypes are left unchanged. The toolkit's double-accidental
+readability policy is applied when an interval would otherwise create a
+triple accidental.
 
 Other archive members are copied with their original `ZipInfo` metadata. This
 keeps images, styles, audio settings, view settings, and container metadata

@@ -488,6 +488,17 @@ def test_explicit_staff_id_must_match_its_instrument_definition():
         transpose_mscx(xml, "C", "D")
 
 
+def test_staff_scoped_score_rejects_unscoped_notes_instead_of_skipping_them():
+    xml = b"""<museScore><Score>
+      <Part><Staff id="1"><StaffType group="pitched"/></Staff><Instrument/></Part>
+      <Staff id="1"><Measure/></Staff>
+      <Note><pitch>60</pitch><tpc>14</tpc></Note>
+    </Score></museScore>"""
+
+    with pytest.raises(ScoreFormatError, match="mixes staff-scoped and unscoped"):
+        transpose_mscx(xml, "C", "D")
+
+
 def test_adds_missing_initial_key_signature_and_recomputes_written_pitch():
     xml = b"""<museScore><Score>
       <Part><Staff id="1"><StaffType group="pitched"/></Staff><Instrument>
@@ -799,6 +810,20 @@ def test_changed_document_preserves_xml_version_and_standalone_declaration():
     assert ET.fromstring(rendered).findtext(".//pitch") == "62"
 
 
+def test_long_valid_xml_declaration_is_not_lost_on_rewrite():
+    padding = " " * 20_000
+    xml = (
+        f"<?xml{padding}version='1.0'{padding}encoding='UTF-8'?>"
+        "<museScore><Score><Note><pitch>60</pitch><tpc>14</tpc></Note>"
+        "</Score></museScore>"
+    )
+
+    rendered, _ = transpose_mscx(xml, "C", "D")
+
+    assert rendered.startswith(b"<?xml version='1.0' encoding='utf-8'?>")
+    assert ET.fromstring(rendered).findtext(".//pitch") == "62"
+
+
 @pytest.mark.parametrize("declared_encoding", ["ISO-8859-1", "UTF-16"])
 def test_string_no_op_normalizes_encoding_declaration_to_utf8(
     declared_encoding: str,
@@ -841,6 +866,18 @@ def test_doctype_score_is_preserved_on_no_op_and_rejected_on_change():
     assert unchanged == xml
 
     with pytest.raises(ScoreFormatError, match="DOCTYPE"):
+        transpose_mscx(xml, "C", "D")
+
+
+def test_namespaced_score_is_preserved_on_no_op_and_rejected_on_change():
+    xml = b"""<museScore xmlns:x="urn:extension"><Score>
+    <x:Meta>prefix-sensitive</x:Meta>
+    <Note><pitch>60</pitch><tpc>14</tpc></Note></Score></museScore>"""
+
+    unchanged, _ = transpose_mscx(xml, "C", "C")
+    assert unchanged == xml
+
+    with pytest.raises(ScoreFormatError, match="namespace prefixes"):
         transpose_mscx(xml, "C", "D")
 
 

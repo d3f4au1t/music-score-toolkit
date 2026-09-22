@@ -96,7 +96,7 @@ def _validate_musicxml_root(root: ET.Element, *, source: Path) -> None:
     if root_name == "score-partwise":
         parts = [child for child in children if _local_name(child.tag) == "part"]
         part_ids = _musicxml_ids(parts, label="<part>", source=source)
-        if part_ids != declared_ids:
+        if set(part_ids) != set(declared_ids):
             raise ScoreExportError(
                 "MusicXML <part> IDs do not match <score-part> declarations: "
                 f"{source}"
@@ -110,7 +110,7 @@ def _validate_musicxml_root(root: ET.Element, *, source: Path) -> None:
         for measure in measures:
             parts = [child for child in measure if _local_name(child.tag) == "part"]
             part_ids = _musicxml_ids(parts, label="<part>", source=source)
-            if part_ids != declared_ids:
+            if set(part_ids) != set(declared_ids):
                 raise ScoreExportError(
                     "MusicXML measure <part> IDs do not match <score-part> "
                     f"declarations: {source}"
@@ -137,6 +137,14 @@ def _validate_mxl(path: Path) -> None:
                 )
 
             names = archive.namelist()
+            duplicates = [
+                name for name, count in Counter(names).items() if count > 1
+            ]
+            if duplicates:
+                raise ScoreExportError(
+                    f"Compressed MusicXML contains duplicate member "
+                    f"{duplicates[0]!r}: {path}"
+                )
             if names.count(MUSICXML_CONTAINER) != 1:
                 raise ScoreExportError(
                     f"Compressed MusicXML must contain one {MUSICXML_CONTAINER}: {path}"
@@ -148,11 +156,27 @@ def _validate_mxl(path: Path) -> None:
             if _local_name(container.tag) != "container":
                 raise ScoreExportError(f"Invalid MusicXML container root in {path}.")
 
-            rootfiles = [
-                element for element in container.iter() if _local_name(element.tag) == "rootfile"
+            rootfiles_containers = [
+                child for child in container if _local_name(child.tag) == "rootfiles"
             ]
-            if not rootfiles:
-                raise ScoreExportError(f"MusicXML container has no <rootfile>: {path}")
+            if len(rootfiles_containers) != 1:
+                raise ScoreExportError(
+                    f"MusicXML container must contain one direct <rootfiles>: {path}"
+                )
+            rootfiles = [
+                child
+                for child in rootfiles_containers[0]
+                if _local_name(child.tag) == "rootfile"
+            ]
+            all_rootfiles = [
+                element
+                for element in container.iter()
+                if _local_name(element.tag) == "rootfile"
+            ]
+            if len(rootfiles) != 1 or len(all_rootfiles) != 1:
+                raise ScoreExportError(
+                    f"MusicXML container must contain one direct <rootfile>: {path}"
+                )
             root_path = rootfiles[0].get("full-path", "")
             member_path = PurePosixPath(root_path)
             if (

@@ -75,6 +75,7 @@ class _MscxDocument:
     xml_version: str
     standalone: str | None
     has_doctype: bool
+    has_namespaces: bool
 
 
 _ACCIDENTAL_TO_ALTERATION = {
@@ -139,6 +140,9 @@ _XML_DECLARATION_RE = re.compile(
     r"\A\ufeff?[ \t\r\n]*<\?xml(?=[ \t\r\n]).*?\?>",
     flags=re.DOTALL,
 )
+_XML_DECLARATION_START_RE = re.compile(
+    r"\A\ufeff?[ \t\r\n]*<\?xml(?=[ \t\r\n])",
+)
 _XML_ENCODING_RE = re.compile(
     r"(\bencoding\s*=\s*)(['\"])[^'\"]*\2",
     flags=re.IGNORECASE,
@@ -163,6 +167,7 @@ class _MscxTreeBuilder:
         self.prolog: list[ET.Element] = []
         self.epilog: list[ET.Element] = []
         self.has_doctype = False
+        self.has_namespaces = False
 
     def start(self, tag: str, attributes: dict[str, str]) -> ET.Element:
         self._depth += 1
@@ -200,6 +205,13 @@ class _MscxTreeBuilder:
     ) -> None:
         del name, public_id, system_id
         self.has_doctype = True
+
+    def start_ns(self, prefix: str | None, uri: str) -> None:
+        del prefix, uri
+        self.has_namespaces = True
+
+    def end_ns(self, prefix: str | None) -> None:
+        del prefix
 
     def close(self) -> ET.Element:
         return self._builder.close()
@@ -327,9 +339,13 @@ def _score_contexts(
 
 def _xml_prefix(content: bytes | str) -> str:
     if isinstance(content, str):
-        return content[:4096]
+        initial = content[:4096]
+        if _XML_DECLARATION_START_RE.match(initial) is None:
+            return initial
+        declaration_end = content.find("?>")
+        return content if declaration_end < 0 else content[: declaration_end + 2]
 
-    sample = content[:16384]
+    signature = content[:4]
     encodings = (
         (b"\xff\xfe\x00\x00", "utf-32"),
         (b"\x00\x00\xfe\xff", "utf-32"),
@@ -342,10 +358,20 @@ def _xml_prefix(content: bytes | str) -> str:
         (b"<\x00?\x00", "utf-16-le"),
     )
     encoding = next(
-        (name for signature, name in encodings if sample.startswith(signature)),
+        (name for marker, name in encodings if signature.startswith(marker)),
         "ascii",
     )
-    return sample.decode(encoding, errors="ignore")
+    sample_size = min(len(content), 16384)
+    while True:
+        decoded = content[:sample_size].decode(encoding, errors="ignore")
+        if _XML_DECLARATION_START_RE.match(decoded) is None:
+            return decoded
+        declaration_end = decoded.find("?>")
+        if declaration_end >= 0:
+            return decoded[: declaration_end + 2]
+        if sample_size == len(content):
+            return decoded
+        sample_size = min(len(content), sample_size * 2)
 
 
 def _xml_declaration_fields(
@@ -397,6 +423,7 @@ def _parse_mscx(content: bytes | str) -> _MscxDocument:
         xml_version=xml_version,
         standalone=standalone,
         has_doctype=target.has_doctype,
+        has_namespaces=target.has_namespaces,
     )
 
 
@@ -405,6 +432,11 @@ def _render_mscx(document: _MscxDocument) -> bytes:
         raise ScoreFormatError(
             "MSCX documents with a DOCTYPE cannot be rewritten safely; "
             "no output was written."
+        )
+    if document.has_namespaces:
+        raise ScoreFormatError(
+            "MSCX documents with XML namespaces cannot be rewritten without "
+            "changing namespace prefixes; no output was written."
         )
     try:
         body = b"".join(
@@ -1045,6 +1077,18 @@ def _validate_score_context(
     transposition_changes_spelling: bool,
 ) -> list[_StaffScope]:
     scopes = _staff_scopes(score)
+    if scopes:
+        unscoped_tags = [
+            tag
+            for tag in ("Note", "Harmony", "KeySig")
+            if _unscoped_elements(score, tag)
+        ]
+        if unscoped_tags:
+            rendered = ", ".join(unscoped_tags)
+            raise ScoreFormatError(
+                "MuseScore Score mixes staff-scoped and unscoped musical content "
+                f"({rendered}); no output was written."
+            )
     if not transposition_changes_spelling:
         return scopes
 

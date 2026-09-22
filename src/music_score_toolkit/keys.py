@@ -87,8 +87,8 @@ NATURAL_KEY_TPC = {
     "B": 19,
 }
 
-# MuseScore can read triple accidentals, but MuseScore 4's normal transpose
-# operation respells results to use at most double flats or double sharps.
+# MuseScore can read triple accidentals. The toolkit deliberately respells
+# changed results to at most double flats or sharps for consistent readability.
 TPC_MIN = -8
 TPC_MAX = 40
 TRANSPOSED_TPC_MIN = -1
@@ -99,6 +99,11 @@ TPC_LINE_TO_STEP = (3, 0, 4, 1, 5, 2, 6)
 
 class KeyNameError(ValueError):
     """Raised when a key name cannot be normalized."""
+
+
+def _require_integer(value: int, *, label: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{label} must be an integer.")
 
 
 def normalize_key(value: str) -> str:
@@ -112,7 +117,7 @@ def normalize_key(value: str) -> str:
         raise KeyNameError("Key name cannot be empty.")
     normalized = compact[0].upper() + compact[1:].replace("B", "b")
     if normalized not in KEY_TO_SEMITONE:
-        choices = ", ".join(KEY_SIGNATURES)
+        choices = ", ".join(KEY_TO_SEMITONE)
         raise KeyNameError(f"Unsupported major key {value!r}. Expected one of: {choices}.")
     return normalized
 
@@ -159,10 +164,12 @@ def calculate_tpc_shift(from_key: str, to_key: str) -> int:
 def transpose_tpc(tpc: int, tpc_shift: int) -> int:
     """Transpose a MuseScore TPC while retaining its enharmonic intent.
 
-    MuseScore 4 accepts triple accidentals as input but its regular transpose
-    operation enharmonically respells output beyond double accidentals.
+    MuseScore accepts triple accidentals as input. For readable output, this
+    toolkit enharmonically respells changed results beyond double accidentals.
     """
 
+    _require_integer(tpc, label="MuseScore TPC")
+    _require_integer(tpc_shift, label="TPC shift")
     if not TPC_MIN <= tpc <= TPC_MAX:
         raise ValueError(f"Invalid MuseScore TPC {tpc}; expected {TPC_MIN}..{TPC_MAX}.")
     if tpc_shift == 0:
@@ -197,6 +204,7 @@ def transpose_tpc(tpc: int, tpc_shift: int) -> int:
 def tpc_pitch_class(tpc: int) -> int:
     """Return the chromatic pitch class represented by a MuseScore TPC."""
 
+    _require_integer(tpc, label="MuseScore TPC")
     if not TPC_MIN <= tpc <= TPC_MAX:
         raise ValueError(f"Invalid MuseScore TPC {tpc}; expected {TPC_MIN}..{TPC_MAX}.")
     return (7 * (tpc - 14)) % 12
@@ -205,6 +213,7 @@ def tpc_pitch_class(tpc: int) -> int:
 def tpc_alteration(tpc: int) -> int:
     """Return a MuseScore TPC's accidental value from triple-flat to triple-sharp."""
 
+    _require_integer(tpc, label="MuseScore TPC")
     if not TPC_MIN <= tpc <= TPC_MAX:
         raise ValueError(f"Invalid MuseScore TPC {tpc}; expected {TPC_MIN}..{TPC_MAX}.")
     return ((tpc - TPC_MIN) // 7) - 3
@@ -224,6 +233,8 @@ def transpose_key_signature(signature: int, semitone_shift: int, spelling: str) 
     (positive). Enharmonic choices follow the requested accidental family.
     """
 
+    _require_integer(signature, label="Key-signature value")
+    _require_integer(semitone_shift, label="Semitone shift")
     try:
         source_pitch_class = KEY_SIGNATURE_TO_SEMITONE[signature]
     except KeyError as exc:
@@ -256,6 +267,8 @@ def transpose_key_signature_by_tpc(signature: int, tpc_shift: int) -> int:
     enharmonically into MuseScore's conventional ``-7..7`` signature range.
     """
 
+    _require_integer(signature, label="Key-signature value")
+    _require_integer(tpc_shift, label="TPC shift")
     if not -7 <= signature <= 7:
         raise ValueError(
             f"Unsupported conventional key-signature value {signature}; expected -7..7."
@@ -271,7 +284,8 @@ def transpose_key_signature_by_tpc(signature: int, tpc_shift: int) -> int:
 def tpc_for_pitch(midi_pitch: int, spelling: str) -> int:
     """Map a MIDI pitch to a MuseScore tonal pitch class."""
 
-    if not isinstance(midi_pitch, int) or isinstance(midi_pitch, bool) or not 0 <= midi_pitch <= 127:
+    _require_integer(midi_pitch, label="MIDI pitch")
+    if not 0 <= midi_pitch <= 127:
         raise ValueError("MIDI pitch must be an integer from 0 to 127.")
     if spelling not in {"flat", "sharp"}:
         raise ValueError("Pitch spelling must be 'flat' or 'sharp'.")

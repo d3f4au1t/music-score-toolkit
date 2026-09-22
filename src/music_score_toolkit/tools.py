@@ -96,7 +96,7 @@ def _validate_musicxml_root(root: ET.Element) -> None:
     if root_name == "score-partwise":
         parts = [child for child in children if _local_name(child.tag) == "part"]
         part_ids = _musicxml_ids(parts, label="<part>")
-        if part_ids != declared_ids:
+        if set(part_ids) != set(declared_ids):
             raise ValueError(
                 "MusicXML <part> IDs do not match <score-part> declarations"
             )
@@ -109,7 +109,7 @@ def _validate_musicxml_root(root: ET.Element) -> None:
         for measure in measures:
             parts = [child for child in measure if _local_name(child.tag) == "part"]
             part_ids = _musicxml_ids(parts, label="<part>")
-            if part_ids != declared_ids:
+            if set(part_ids) != set(declared_ids):
                 raise ValueError(
                     "MusicXML measure <part> IDs do not match <score-part> declarations"
                 )
@@ -187,14 +187,24 @@ def _validate_mxl(path: Path) -> None:
         container = ET.fromstring(archive.read(MUSICXML_CONTAINER))
         if _local_name(container.tag) != "container":
             raise ValueError("MXL container has an invalid root")
-        rootfile = next(
-            (
-                element.get("full-path", "")
-                for element in container.iter()
-                if _local_name(element.tag) == "rootfile"
-            ),
-            "",
-        )
+        rootfiles_containers = [
+            child for child in container if _local_name(child.tag) == "rootfiles"
+        ]
+        if len(rootfiles_containers) != 1:
+            raise ValueError("MXL container must contain one direct <rootfiles>")
+        rootfiles = [
+            child
+            for child in rootfiles_containers[0]
+            if _local_name(child.tag) == "rootfile"
+        ]
+        all_rootfiles = [
+            element
+            for element in container.iter()
+            if _local_name(element.tag) == "rootfile"
+        ]
+        if len(rootfiles) != 1 or len(all_rootfiles) != 1:
+            raise ValueError("MXL container must contain one direct <rootfile>")
+        rootfile = rootfiles[0].get("full-path", "")
         member_path = PurePosixPath(rootfile)
         if (
             not rootfile

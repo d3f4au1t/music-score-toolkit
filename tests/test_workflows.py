@@ -30,6 +30,13 @@ TIMEWISE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 </score-timewise>
 """
 
+REORDERED_PARTWISE_XML = b"""<score-partwise>
+  <part-list><score-part id="P1"/><score-part id="P2"/></part-list>
+  <part id="P2"><measure number="1"/></part>
+  <part id="P1"><measure number="1"/></part>
+</score-partwise>
+"""
+
 CONTAINER_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
@@ -56,6 +63,13 @@ def _write_mxl(
 def test_validates_partwise_and_timewise_musicxml(tmp_path: Path, payload: bytes):
     score = tmp_path / "score.musicxml"
     score.write_bytes(payload)
+
+    validate_score_file(score)
+
+
+def test_validates_musicxml_parts_serialized_in_non_display_order(tmp_path: Path):
+    score = tmp_path / "score.musicxml"
+    score.write_bytes(REORDERED_PARTWISE_XML)
 
     validate_score_file(score)
 
@@ -143,6 +157,12 @@ def test_validates_mxl_without_optional_legacy_mimetype(tmp_path: Path):
             True,
         ),
         (CONTAINER_XML, b"<score-partwise>", True),
+        (
+            b"""<container><junk><rootfile full-path="score.musicxml"/></junk>
+            <rootfiles><rootfile full-path="missing.musicxml"/></rootfiles></container>""",
+            PARTWISE_XML,
+            True,
+        ),
     ],
 )
 def test_rejects_invalid_mxl_containers(

@@ -10,6 +10,7 @@ from music_score_toolkit.keys import (
     tonic_tpc,
     tpc_alteration,
     tpc_for_pitch,
+    tpc_pitch_class,
     transpose_key_signature,
     transpose_key_signature_by_tpc,
     transpose_tpc,
@@ -25,7 +26,7 @@ def test_normalize_key(raw, expected):
 
 
 def test_rejects_unknown_key():
-    with pytest.raises(KeyNameError):
+    with pytest.raises(KeyNameError, match="D#"):
         normalize_key("H")
 
 
@@ -49,9 +50,15 @@ def test_target_key_controls_default_spelling():
     assert tpc_for_pitch(61, "flat") != tpc_for_pitch(61, "sharp")
 
 
-@pytest.mark.parametrize("pitch", [-1, 128, 60.5, True])
-def test_tpc_for_pitch_rejects_non_midi_values(pitch):
+@pytest.mark.parametrize("pitch", [-1, 128])
+def test_tpc_for_pitch_rejects_out_of_range_values(pitch):
     with pytest.raises(ValueError, match="MIDI pitch"):
+        tpc_for_pitch(pitch, "sharp")
+
+
+@pytest.mark.parametrize("pitch", [60.5, True])
+def test_tpc_for_pitch_rejects_non_integer_values(pitch):
+    with pytest.raises(TypeError, match="MIDI pitch"):
         tpc_for_pitch(pitch, "sharp")
 
 
@@ -74,6 +81,36 @@ def test_tpc_transposition_respells_beyond_double_accidentals():
     assert tpc_alteration(23) == 1
     assert transpose_tpc(-8, -15) == 25
     assert transpose_tpc(40, 0) == 40
+
+
+def test_tpc_transposition_properties_cover_full_musescore_range():
+    for tpc in range(-8, 41):
+        for shift in range(-7, 8):
+            updated = transpose_tpc(tpc, shift)
+            if shift == 0:
+                assert updated == tpc
+            else:
+                assert -1 <= updated <= 33
+                assert tpc_pitch_class(updated) == (
+                    tpc_pitch_class(tpc) + (7 * shift)
+                ) % 12
+
+
+@pytest.mark.parametrize(
+    ("operation", "args"),
+    [
+        (transpose_tpc, (14.0, 1)),
+        (transpose_tpc, (14, 1.0)),
+        (tpc_pitch_class, (14.0,)),
+        (tpc_alteration, (True,)),
+        (transpose_key_signature, (0.0, 2, "sharp")),
+        (transpose_key_signature, (0, False, "sharp")),
+        (transpose_key_signature_by_tpc, (0, 2.0)),
+    ],
+)
+def test_tonal_helpers_reject_non_integer_numeric_inputs(operation, args):
+    with pytest.raises(TypeError, match="integer"):
+        operation(*args)
 
 
 def test_transposes_conventional_key_signatures_by_interval():

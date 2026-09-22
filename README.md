@@ -151,7 +151,7 @@ print(report.notes_changed)
 - Note spelling follows the full named interval, so enharmonic distinctions
   such as F-sharp versus G-flat survive transposition. Standard explicit
   accidental metadata is retained and its glyph is updated when unambiguous.
-- For MuseScore 4 compatibility, spellings that would require more than a
+- For readable output, spellings that would require more than a
   double accidental are reduced to a readable enharmonic equivalent.
 - The toolkit changes score semantics conservatively, but it is not an
   engraving engine. Review complex notation in MuseScore after conversion.

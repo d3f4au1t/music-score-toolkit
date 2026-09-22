@@ -29,6 +29,12 @@ MISMATCHED_MUSICXML = b"""<?xml version="1.0"?>
   <part id="P2"><measure number="1"/></part>
 </score-partwise>
 """
+REORDERED_MUSICXML = b"""<score-partwise>
+  <part-list><score-part id="P1"/><score-part id="P2"/></part-list>
+  <part id="P2"><measure number="1"/></part>
+  <part id="P1"><measure number="1"/></part>
+</score-partwise>
+"""
 VALID_MSCX = b'<museScore version="4.0"><Score/></museScore>'
 MXL_CONTAINER = b"""<?xml version="1.0"?>
 <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -433,6 +439,64 @@ def test_convert_score_rejects_mismatched_musicxml_part_ids(
     )
 
     with pytest.raises(RuntimeError, match="IDs do not match"):
+        convert_score(source, destination, musescore=executable)
+
+    assert destination.read_text() == "previous output"
+    assert not list(tmp_path.glob(".music-score-*"))
+
+
+def test_convert_score_accepts_musicxml_parts_in_non_display_order(
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "source.musicxml"
+    destination = tmp_path / "score.musicxml"
+    executable = tmp_path / "musescore"
+    source.write_bytes(VALID_MUSICXML)
+    make_executable(executable)
+
+    def write_reordered_score(command, *, check):
+        assert check is False
+        Path(command[-1]).write_bytes(REORDERED_MUSICXML)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "music_score_toolkit.tools.subprocess.run",
+        write_reordered_score,
+    )
+
+    assert convert_score(source, destination, musescore=executable) == destination
+    assert destination.read_bytes() == REORDERED_MUSICXML
+
+
+def test_convert_score_rejects_mxl_with_nested_decoy_rootfile(
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "source.musicxml"
+    destination = tmp_path / "score.mxl"
+    executable = tmp_path / "musescore"
+    source.write_bytes(VALID_MUSICXML)
+    destination.write_text("previous output")
+    make_executable(executable)
+
+    def write_ambiguous_container(command, *, check):
+        output = Path(command[-1])
+        container = b"""<container>
+        <junk><rootfile full-path="score.musicxml"/></junk>
+        <rootfiles><rootfile full-path="missing.musicxml"/></rootfiles>
+        </container>"""
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("META-INF/container.xml", container)
+            archive.writestr("score.musicxml", VALID_MUSICXML)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "music_score_toolkit.tools.subprocess.run",
+        write_ambiguous_container,
+    )
+
+    with pytest.raises(RuntimeError, match="direct <rootfile>"):
         convert_score(source, destination, musescore=executable)
 
     assert destination.read_text() == "previous output"
