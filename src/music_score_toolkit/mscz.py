@@ -136,7 +136,7 @@ _ARCHIVE_READ_ERRORS = (
 )
 
 _XML_DECLARATION_RE = re.compile(
-    r"\A\ufeff?[ \t\r\n]*<\?xml\b.*?\?>",
+    r"\A\ufeff?[ \t\r\n]*<\?xml(?=[ \t\r\n]).*?\?>",
     flags=re.DOTALL,
 )
 _XML_ENCODING_RE = re.compile(

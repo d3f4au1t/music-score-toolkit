@@ -813,6 +813,17 @@ def test_string_no_op_normalizes_encoding_declaration_to_utf8(
     assert report.score_entries_changed == 0
 
 
+def test_xml_stylesheet_pi_is_not_mistaken_for_an_xml_declaration():
+    xml = """<?xml-stylesheet encoding="ISO-8859-1" href="score.xsl"?>
+    <museScore><Score/></museScore>"""
+
+    rendered, report = transpose_mscx(xml, "C", "C")
+
+    assert b'encoding="ISO-8859-1"' in rendered
+    assert not rendered.startswith(b"<?xml version=")
+    assert report.score_entries_changed == 0
+
+
 def test_changed_document_without_declaration_does_not_gain_one():
     xml = b"<museScore><Score><Note><pitch>60</pitch><tpc>14</tpc></Note></Score></museScore>"
 

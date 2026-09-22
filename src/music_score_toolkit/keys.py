@@ -271,5 +271,9 @@ def transpose_key_signature_by_tpc(signature: int, tpc_shift: int) -> int:
 def tpc_for_pitch(midi_pitch: int, spelling: str) -> int:
     """Map a MIDI pitch to a MuseScore tonal pitch class."""
 
+    if not isinstance(midi_pitch, int) or isinstance(midi_pitch, bool) or not 0 <= midi_pitch <= 127:
+        raise ValueError("MIDI pitch must be an integer from 0 to 127.")
+    if spelling not in {"flat", "sharp"}:
+        raise ValueError("Pitch spelling must be 'flat' or 'sharp'.")
     mapping = MIDI_TO_TPC_FLAT if spelling == "flat" else MIDI_TO_TPC_SHARP
     return mapping[midi_pitch % 12]

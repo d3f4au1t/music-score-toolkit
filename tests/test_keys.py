@@ -49,6 +49,18 @@ def test_target_key_controls_default_spelling():
     assert tpc_for_pitch(61, "flat") != tpc_for_pitch(61, "sharp")
 
 
+@pytest.mark.parametrize("pitch", [-1, 128, 60.5, True])
+def test_tpc_for_pitch_rejects_non_midi_values(pitch):
+    with pytest.raises(ValueError, match="MIDI pitch"):
+        tpc_for_pitch(pitch, "sharp")
+
+
+@pytest.mark.parametrize("spelling", ["", "FLAT", "bogus", None])
+def test_tpc_for_pitch_rejects_unknown_spelling(spelling):
+    with pytest.raises(ValueError, match="Pitch spelling"):
+        tpc_for_pitch(60, spelling)
+
+
 def test_named_key_interval_controls_tpc_spelling():
     assert tonic_tpc("Cb") == 7
     assert calculate_tpc_shift("C", "D") == 2
