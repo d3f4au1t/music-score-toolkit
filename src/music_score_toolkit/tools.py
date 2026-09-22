@@ -705,6 +705,7 @@ def convert_score(
                 size=output_stat.st_size,
             )
         except (
+            EOFError,
             ET.ParseError,
             KeyError,
             LookupError,

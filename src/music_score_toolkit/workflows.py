@@ -279,10 +279,12 @@ def _validate_mxl(path: Path) -> None:
     except ScoreExportError:
         raise
     except (
+        EOFError,
         KeyError,
         NotImplementedError,
         OSError,
         RuntimeError,
+        UnicodeError,
         _ZipValidationError,
         zipfile.BadZipFile,
     ) as exc:

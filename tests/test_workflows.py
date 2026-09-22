@@ -425,6 +425,31 @@ def test_rejects_truncated_non_zip_mxl(tmp_path: Path):
         validate_score_file(score)
 
 
+def test_corrupt_utf8_zip_filename_is_reported_as_score_export_error(
+    tmp_path: Path,
+):
+    score = tmp_path / "score.mxl"
+    filename = "scoré.musicxml"
+    container = (
+        f'<container><rootfiles><rootfile full-path="{filename}"/>'
+        "</rootfiles></container>"
+    ).encode()
+    with zipfile.ZipFile(score, "w") as archive:
+        archive.writestr("META-INF/container.xml", container)
+        archive.writestr(filename, PARTWISE_XML)
+
+    payload = bytearray(score.read_bytes())
+    central_directory = payload.index(b"PK\x01\x02")
+    encoded_name = filename.encode()
+    name_offset = payload.index(encoded_name, central_directory)
+    continuation = name_offset + encoded_name.index(b"\xa9")
+    payload[continuation] = 0xDF
+    score.write_bytes(payload)
+
+    with pytest.raises(ScoreExportError, match="compressed MusicXML"):
+        validate_score_file(score)
+
+
 def test_validation_rejects_a_file_changed_during_read(monkeypatch, tmp_path: Path):
     score = tmp_path / "score.musicxml"
     score.write_bytes(PARTWISE_XML)
