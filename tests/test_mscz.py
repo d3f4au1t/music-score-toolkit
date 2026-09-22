@@ -495,10 +495,16 @@ def test_idless_multistaff_part_definitions_map_by_score_order():
         <Staff><StaffType group="pitched"/></Staff>
         <Instrument><trackName>Piano</trackName></Instrument>
       </Part>
+      <Part id="2">
+        <Staff><StaffType group="percussion"/></Staff>
+        <Instrument><useDrumset>1</useDrumset></Instrument>
+      </Part>
       <Staff id="1"><Measure><KeySig><concertKey>0</concertKey></KeySig>
         <Note><pitch>60</pitch><tpc>14</tpc></Note></Measure></Staff>
       <Staff id="2"><Measure><KeySig><concertKey>0</concertKey></KeySig>
         <Note><pitch>48</pitch><tpc>14</tpc></Note></Measure></Staff>
+      <Staff id="3"><Measure>
+        <Note><pitch>38</pitch><tpc>16</tpc></Note></Measure></Staff>
     </Score></museScore>"""
 
     rendered, report = transpose_mscx(xml, "C", "D")
@@ -507,8 +513,62 @@ def test_idless_multistaff_part_definitions_map_by_score_order():
     assert [staff.findtext(".//pitch") for staff in root.findall(".//Score/Staff")] == [
         "62",
         "50",
+        "38",
     ]
     assert report.notes_changed == 2
+
+
+@pytest.mark.parametrize(
+    "definitions",
+    [
+        '<Part><Staff id="1"/><Staff/></Part>',
+        '<Part><Staff/><Staff/></Part>',
+    ],
+)
+def test_ambiguous_idless_staff_definitions_fail_closed(definitions: str):
+    score_ids = ('id="1"', 'id="3"') if "id=\"1\"" not in definitions else (
+        'id="1"',
+        'id="2"',
+    )
+    xml = f"""<museScore><Score>{definitions}
+      <Staff {score_ids[0]}><Measure/></Staff>
+      <Staff {score_ids[1]}><Measure/></Staff>
+    </Score></museScore>"""
+
+    with pytest.raises(ScoreFormatError, match="mix|canonical"):
+        transpose_mscx(xml, "C", "D")
+
+
+def test_idless_staff_definition_count_must_match_score_staves():
+    xml = b"""<museScore><Score><Part><Staff/><Staff/></Part>
+      <Staff id="1"><Measure/></Staff>
+    </Score></museScore>"""
+
+    with pytest.raises(ScoreFormatError, match="definition count"):
+        transpose_mscx(xml, "C", "D")
+
+
+def test_shared_part_definitions_participate_in_global_staff_order():
+    xml = b"""<museScore><Score>
+      <SharedPart id="3"><Staff/><Staff/><Instrument/></SharedPart>
+      <Part id="1"><Staff/><Instrument/></Part>
+      <Part id="2"><Staff/><Instrument><useDrumset>1</useDrumset></Instrument></Part>
+      <Staff id="1"><Measure><Note><pitch>60</pitch><tpc>14</tpc></Note></Measure></Staff>
+      <Staff id="2"><Measure><Note><pitch>48</pitch><tpc>14</tpc></Note></Measure></Staff>
+      <Staff id="3"><Measure><Note><pitch>64</pitch><tpc>18</tpc></Note></Measure></Staff>
+      <Staff id="4"><Measure><Note><pitch>38</pitch><tpc>16</tpc></Note></Measure></Staff>
+    </Score></museScore>"""
+
+    rendered, report = transpose_mscx(xml, "C", "D")
+    root = ET.fromstring(rendered)
+
+    assert [staff.findtext(".//pitch") for staff in root.findall(".//Score/Staff")] == [
+        "62",
+        "50",
+        "66",
+        "38",
+    ]
+    assert report.notes_changed == 3
 
 
 def test_staff_scoped_score_rejects_unscoped_notes_instead_of_skipping_them():

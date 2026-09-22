@@ -114,7 +114,7 @@ _ALTERATION_TO_LEGACY_ACCIDENTAL = {
     2: "double sharp",
 }
 
-_SCORE_BOUNDARIES = frozenset({"Part", "Staff", "Score"})
+_SCORE_BOUNDARIES = frozenset({"Part", "SharedPart", "Staff", "Score"})
 
 _MAX_ARCHIVE_MEMBERS = 10_000
 _MAX_ARCHIVE_MEMBER_SIZE = 2 * 1024 * 1024 * 1024
@@ -536,45 +536,18 @@ def _staff_group(definition: ET.Element | None, instrument: ET.Element | None) -
 
 
 def _staff_scopes(score: ET.Element) -> list[_StaffScope]:
-    definitions: list[
-        tuple[str | None, bool, ET.Element, ET.Element | None, str]
-    ] = []
-    definitions_by_id: dict[
-        str,
-        tuple[int, ET.Element, ET.Element | None, str],
-    ] = {}
-    for part in score.findall("Part"):
+    definitions: list[tuple[str | None, ET.Element, ET.Element | None, str]] = []
+    for part in score:
+        if part.tag not in {"Part", "SharedPart"}:
+            continue
         instrument = part.find("Instrument")
         preference = part.findtext("preferSharpFlat", "").strip().lower()
         if preference not in {"sharps", "flats", "none"}:
             preference = "auto"
-        part_staves = part.findall("Staff")
-        for definition in part_staves:
-            explicit_staff_id = definition.get("id")
-            staff_id = explicit_staff_id
-            if staff_id is None and len(part_staves) == 1:
-                staff_id = part.get("id")
-            definition_index = len(definitions)
-            definitions.append(
-                (
-                    staff_id,
-                    explicit_staff_id is None,
-                    definition,
-                    instrument,
-                    preference,
-                )
-            )
-            if staff_id is not None:
-                if staff_id in definitions_by_id:
-                    raise ScoreFormatError(
-                        f"Invalid MSCX XML: duplicate staff definition id {staff_id!r}."
-                    )
-                definitions_by_id[staff_id] = (
-                    definition_index,
-                    definition,
-                    instrument,
-                    preference,
-                )
+        definitions.extend(
+            (definition.get("id"), definition, instrument, preference)
+            for definition in part.findall("Staff")
+        )
 
     content_staves = score.findall("Staff")
     content_ids = [staff.get("id") for staff in content_staves if staff.get("id")]
@@ -584,35 +557,58 @@ def _staff_scopes(score: ET.Element) -> list[_StaffScope]:
             f"Invalid MSCX XML: duplicate score staff id {duplicate_ids[0]!r}."
         )
 
+    if definitions and content_staves and len(definitions) != len(content_staves):
+        raise ScoreFormatError(
+            "Invalid MSCX XML: staff definition count does not match score staff count."
+        )
+
+    explicit_definition_ids = [staff_id is not None for staff_id, *_ in definitions]
+    if any(explicit_definition_ids) and not all(explicit_definition_ids):
+        raise ScoreFormatError(
+            "Invalid MSCX XML: staff definitions mix explicit and idless IDs."
+        )
+
     scopes: list[_StaffScope] = []
-    used_definitions: set[int] = set()
-    for index, content in enumerate(content_staves):
-        content_id = content.get("id")
-        match = definitions_by_id.get(content_id or "")
-        if match is not None:
-            definition_index, definition, instrument, preference = match
-        elif index < len(definitions) and (
-            definitions[index][1] or content_id is None
-        ):
-            definition_index = index
-            _, _, definition, instrument, preference = definitions[index]
-        elif definitions:
+    if definitions and not any(explicit_definition_ids):
+        actual_ids = [staff.get("id") for staff in content_staves]
+        expected_ids = [str(index) for index in range(1, len(content_staves) + 1)]
+        if actual_ids != expected_ids:
             raise ScoreFormatError(
-                f"Invalid MSCX XML: score staff id {content_id!r} has no matching "
-                "staff definition."
+                "Invalid MSCX XML: idless staff definitions require canonical score "
+                "staff IDs 1..N."
             )
-        else:
-            definition_index = None
-            definition = content
-            instrument = None
-            preference = "auto"
-        if definition_index is not None:
-            if definition_index in used_definitions:
+        matches = [
+            (content, definition, instrument, preference)
+            for content, (_, definition, instrument, preference) in zip(
+                content_staves,
+                definitions,
+                strict=True,
+            )
+        ]
+    elif definitions:
+        definitions_by_id: dict[str, tuple[ET.Element, ET.Element | None, str]] = {}
+        for staff_id, definition, instrument, preference in definitions:
+            assert staff_id is not None
+            if staff_id in definitions_by_id:
                 raise ScoreFormatError(
-                    "Invalid MSCX XML: multiple score staves map to the same staff "
-                    "definition."
+                    f"Invalid MSCX XML: duplicate staff definition id {staff_id!r}."
                 )
-            used_definitions.add(definition_index)
+            definitions_by_id[staff_id] = (definition, instrument, preference)
+        matches = []
+        for content in content_staves:
+            content_id = content.get("id")
+            match = definitions_by_id.get(content_id or "")
+            if match is None:
+                raise ScoreFormatError(
+                    f"Invalid MSCX XML: score staff id {content_id!r} has no matching "
+                    "staff definition."
+                )
+            definition, instrument, preference = match
+            matches.append((content, definition, instrument, preference))
+    else:
+        matches = [(content, content, None, "auto") for content in content_staves]
+
+    for content, definition, instrument, preference in matches:
         scopes.append(
             _StaffScope(
                 content=content,
