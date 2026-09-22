@@ -1002,6 +1002,34 @@ def test_fails_closed_for_transposing_staff_harmony_after_key_change():
         transpose_mscx(xml, "C", "D")
 
 
+def test_fails_closed_for_transposing_staff_with_implicit_opening_key_change():
+    xml = b"""<museScore><Score>
+      <Part><Staff id="1"><StaffType group="pitched"/></Staff><Instrument>
+        <transposeDiatonic>-1</transposeDiatonic><transposeChromatic>-2</transposeChromatic>
+      </Instrument></Part>
+      <Staff id="1">
+        <Measure><Note><pitch>60</pitch><tpc>14</tpc><tpc2>16</tpc2></Note></Measure>
+        <Measure><KeySig><concertKey>3</concertKey><actualKey>5</actualKey></KeySig>
+          <Note><pitch>61</pitch><tpc>21</tpc><tpc2>23</tpc2></Note></Measure>
+      </Staff>
+    </Score></museScore>"""
+
+    with pytest.raises(ScoreFormatError, match="tick-aware"):
+        transpose_mscx(xml, "C", "D")
+
+
+def test_fails_closed_when_key_change_needs_enharmonic_note_respelling():
+    xml = b"""<museScore><Score><Staff>
+      <Measure><KeySig><concertKey>0</concertKey></KeySig>
+        <Note><pitch>60</pitch><tpc>14</tpc></Note></Measure>
+      <Measure><KeySig><concertKey>7</concertKey></KeySig>
+        <Note><pitch>61</pitch><tpc>21</tpc></Note></Measure>
+    </Staff></Score></museScore>"""
+
+    with pytest.raises(ScoreFormatError, match="enharmonic-signature boundary"):
+        transpose_mscx(xml, "C", "D")
+
+
 def test_embedded_score_staff_ids_are_resolved_in_their_own_context():
     xml = b"""<museScore><Score>
       <Part><Staff id="1"><StaffType group="pitched"/></Staff><Instrument/></Part>

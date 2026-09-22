@@ -969,6 +969,34 @@ def _written_tpc_adjustment(
     return normalized_written - named_written
 
 
+def _key_signature_folds_enharmonically(
+    key_signature: ET.Element,
+    tpc_shift: int,
+) -> bool:
+    """Return whether a conventional signature must cross the fifths boundary."""
+
+    if _key_signature_kind(key_signature) != "conventional":
+        return False
+    signature = None
+    for field_name in ("concertKey", "actualKey", "accidental"):
+        signature = _read_integer_field(key_signature, field_name)
+        if signature is not None:
+            break
+    if signature is None:
+        return False
+    try:
+        named_tonic = transpose_tpc(14 + signature, tpc_shift)
+        normalized_tonic = 14 + transpose_key_signature_by_tpc(
+            signature,
+            tpc_shift,
+        )
+    except ValueError as exc:
+        raise ScoreFormatError(
+            f"Invalid MuseScore key-signature value: {signature}"
+        ) from exc
+    return named_tonic != normalized_tonic
+
+
 def _transpose_harmony(harmony: ET.Element, tpc_shift: int) -> bool:
     changed = False
     for field_name in ("root", "base", "bass"):
@@ -1075,6 +1103,7 @@ def _validate_score_context(
     score: ET.Element,
     *,
     transposition_changes_spelling: bool,
+    tpc_shift: int,
 ) -> list[_StaffScope]:
     scopes = _staff_scopes(score)
     if scopes:
@@ -1131,11 +1160,28 @@ def _validate_score_context(
             )
         if scope.group == "pitched" and _instrument_tpc_shift(scope.instrument):
             key_signatures = _bounded_elements(scope.content, "KeySig")
-            if len(key_signatures) > 1 and has_content:
+            first_measure = _first_measure(scope.content)
+            opening_key_signature = (
+                _opening_key_signature(first_measure)
+                if first_measure is not None
+                else None
+            )
+            if has_content and any(
+                key_signature is not opening_key_signature
+                for key_signature in key_signatures
+            ):
                 raise ScoreFormatError(
                     "Transposing-instrument staves with mid-score key changes require "
                     "tick-aware written-pitch respelling; no output was written."
                 )
+        if scope.group == "pitched" and has_content and any(
+            _key_signature_folds_enharmonically(key_signature, tpc_shift)
+            for key_signature in _bounded_elements(scope.content, "KeySig")
+        ):
+            raise ScoreFormatError(
+                "A key change crosses the conventional enharmonic-signature boundary "
+                "and requires tick-aware note respelling; no output was written."
+            )
         if (
             scope.group == "pitched"
             and _bounded_elements(scope.content, "FretDiagram")
@@ -1145,6 +1191,17 @@ def _validate_score_context(
                 "no output was written."
             )
     if not scopes:
+        unscoped_has_content = bool(_unscoped_elements(score, "Note")) or bool(
+            _unscoped_elements(score, "Harmony")
+        )
+        if unscoped_has_content and any(
+            _key_signature_folds_enharmonically(key_signature, tpc_shift)
+            for key_signature in _unscoped_elements(score, "KeySig")
+        ):
+            raise ScoreFormatError(
+                "A key change crosses the conventional enharmonic-signature boundary "
+                "and requires tick-aware note respelling; no output was written."
+            )
         if any(
             note.find("fret") is not None or note.find("string") is not None
             for note in _unscoped_elements(score, "Note")
@@ -1197,6 +1254,7 @@ def transpose_mscx(
             _validate_score_context(
                 score,
                 transposition_changes_spelling=transposition_changes_spelling,
+                tpc_shift=note_tpc_shift,
             ),
         )
         for score, context_concert_pitch in score_contexts
