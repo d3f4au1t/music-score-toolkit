@@ -219,6 +219,21 @@ def test_validates_mxl_with_alternate_rootfile_renditions(tmp_path: Path):
     validate_score_file(score)
 
 
+def test_rejects_mxl_with_high_ratio_extra_member(tmp_path: Path):
+    score = tmp_path / "score.mxl"
+    with zipfile.ZipFile(score, "w") as archive:
+        archive.writestr("META-INF/container.xml", CONTAINER_XML)
+        archive.writestr("score.musicxml", PARTWISE_XML)
+        archive.writestr(
+            "oversized-extra.bin",
+            b"\0" * (2 * 1024 * 1024),
+            compress_type=zipfile.ZIP_DEFLATED,
+        )
+
+    with pytest.raises(ScoreExportError, match="suspicious compression ratio"):
+        validate_score_file(score)
+
+
 @pytest.mark.parametrize(
     "container",
     [

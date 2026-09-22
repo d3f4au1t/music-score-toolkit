@@ -594,6 +594,42 @@ def test_convert_score_accepts_mxl_with_alternate_rootfile_renditions(
     assert destination.is_file()
 
 
+def test_convert_score_rejects_mxl_with_high_ratio_extra_member(
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "source.musicxml"
+    destination = tmp_path / "score.mxl"
+    executable = tmp_path / "musescore"
+    source.write_bytes(VALID_MUSICXML)
+    destination.write_text("previous output")
+    make_executable(executable)
+
+    def write_archive_bomb(command, *, check):
+        assert check is False
+        output = Path(command[-1])
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("META-INF/container.xml", MXL_CONTAINER)
+            archive.writestr("score.musicxml", VALID_MUSICXML)
+            archive.writestr(
+                "oversized-extra.bin",
+                b"\0" * (2 * 1024 * 1024),
+                compress_type=zipfile.ZIP_DEFLATED,
+            )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "music_score_toolkit.tools.subprocess.run",
+        write_archive_bomb,
+    )
+
+    with pytest.raises(RuntimeError, match="suspicious compression ratio"):
+        convert_score(source, destination, musescore=executable)
+
+    assert destination.read_text() == "previous output"
+    assert not list(tmp_path.glob(".music-score-*"))
+
+
 def test_convert_score_rejects_mxl_with_nested_decoy_rootfile(
     monkeypatch,
     tmp_path: Path,

@@ -13,7 +13,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from .tools import convert_score, find_smartscore, require_executable
+from .tools import (
+    _MAX_CONTAINER_XML_SIZE,
+    _MAX_MUSICXML_SIZE,
+    _read_zip_member,
+    _validated_zip_members,
+    _ZipValidationError,
+    convert_score,
+    find_smartscore,
+    require_executable,
+)
 
 SCORE_SUFFIXES = (".mxl", ".musicxml", ".xml")
 MUSICXML_ROOTS = {"score-partwise", "score-timewise"}
@@ -161,27 +170,20 @@ def _parse_musicxml(payload: bytes, *, source: Path) -> None:
 def _validate_mxl(path: Path) -> None:
     try:
         with zipfile.ZipFile(path) as archive:
-            bad_member = archive.testzip()
-            if bad_member is not None:
-                raise ScoreExportError(
-                    f"Compressed MusicXML has a corrupt member {bad_member!r}: {path}"
-                )
-
-            names = archive.namelist()
-            duplicates = [
-                name for name, count in Counter(names).items() if count > 1
-            ]
-            if duplicates:
-                raise ScoreExportError(
-                    f"Compressed MusicXML contains duplicate member "
-                    f"{duplicates[0]!r}: {path}"
-                )
-            if names.count(MUSICXML_CONTAINER) != 1:
+            members = _validated_zip_members(archive)
+            container_info = members.get(MUSICXML_CONTAINER)
+            if container_info is None or container_info.is_dir():
                 raise ScoreExportError(
                     f"Compressed MusicXML must contain one {MUSICXML_CONTAINER}: {path}"
                 )
             try:
-                container = ET.fromstring(archive.read(MUSICXML_CONTAINER))
+                container = ET.fromstring(
+                    _read_zip_member(
+                        archive,
+                        container_info,
+                        maximum_size=_MAX_CONTAINER_XML_SIZE,
+                    )
+                )
             except (ET.ParseError, LookupError) as exc:
                 raise ScoreExportError(f"Invalid MusicXML container in {path}: {exc}") from exc
             if _local_name(container.tag) != "container":
@@ -214,7 +216,7 @@ def _validate_mxl(path: Path) -> None:
                 root_path = rootfile.get("full-path", "")
                 member_path = PurePosixPath(root_path)
                 try:
-                    member_info = archive.getinfo(root_path)
+                    member_info = members[root_path]
                 except KeyError:
                     member_info = None
                 if (
@@ -222,7 +224,6 @@ def _validate_mxl(path: Path) -> None:
                     or member_path.is_absolute()
                     or ".." in member_path.parts
                     or root_path in references
-                    or names.count(root_path) != 1
                     or member_info is None
                     or member_info.is_dir()
                 ):
@@ -232,7 +233,14 @@ def _validate_mxl(path: Path) -> None:
                     )
                 references.add(root_path)
             first_root_path = rootfiles[0].get("full-path", "")
-            _parse_musicxml(archive.read(first_root_path), source=path)
+            _parse_musicxml(
+                _read_zip_member(
+                    archive,
+                    members[first_root_path],
+                    maximum_size=_MAX_MUSICXML_SIZE,
+                ),
+                source=path,
+            )
     except ScoreExportError:
         raise
     except (
@@ -240,6 +248,7 @@ def _validate_mxl(path: Path) -> None:
         NotImplementedError,
         OSError,
         RuntimeError,
+        _ZipValidationError,
         zipfile.BadZipFile,
     ) as exc:
         raise ScoreExportError(f"Incomplete or invalid compressed MusicXML {path}: {exc}") from exc

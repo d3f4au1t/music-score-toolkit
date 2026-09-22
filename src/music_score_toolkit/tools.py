@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import lzma
 import os
 import shutil
 import signal
@@ -10,6 +11,7 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
@@ -36,6 +38,17 @@ SMARTSCORE_WINDOWS_PATHS = (
 
 MUSICXML_ROOTS = {"score-partwise", "score-timewise"}
 MUSICXML_CONTAINER = "META-INF/container.xml"
+_MAX_ZIP_MEMBERS = 10_000
+_MAX_ZIP_MEMBER_SIZE = 2 * 1024 * 1024 * 1024
+_MAX_ZIP_TOTAL_SIZE = 4 * 1024 * 1024 * 1024
+_MAX_ZIP_COMPRESSION_RATIO = 500
+_MAX_MUSICXML_SIZE = 256 * 1024 * 1024
+_MAX_CONTAINER_XML_SIZE = 16 * 1024 * 1024
+_ZIP_READ_CHUNK_SIZE = 1024 * 1024
+
+
+class _ZipValidationError(ValueError):
+    """Raised when ZIP metadata or a bounded member read is unsafe."""
 
 
 def _is_teardown_abort(returncode: int) -> bool:
@@ -173,18 +186,118 @@ def _validate_pdf(path: Path, *, size: int) -> None:
         raise ValueError("PDF startxref offset is outside the file")
 
 
+def _validated_zip_members(
+    archive: zipfile.ZipFile,
+) -> dict[str, zipfile.ZipInfo]:
+    infos = archive.infolist()
+    if len(infos) > _MAX_ZIP_MEMBERS:
+        raise _ZipValidationError(
+            f"ZIP archive contains too many members ({len(infos)}; "
+            f"maximum {_MAX_ZIP_MEMBERS})"
+        )
+
+    members: dict[str, zipfile.ZipInfo] = {}
+    total_size = 0
+    for info in infos:
+        if info.filename in members:
+            raise _ZipValidationError(
+                f"ZIP archive contains duplicate member {info.filename!r}"
+            )
+        members[info.filename] = info
+        if info.flag_bits & 0x1:
+            raise _ZipValidationError(
+                f"ZIP archive member {info.filename!r} is encrypted"
+            )
+        if (
+            info.file_size < 0
+            or info.compress_size < 0
+            or info.file_size > _MAX_ZIP_MEMBER_SIZE
+        ):
+            raise _ZipValidationError(
+                f"ZIP archive member {info.filename!r} exceeds the "
+                f"{_MAX_ZIP_MEMBER_SIZE}-byte limit"
+            )
+        total_size += info.file_size
+        if total_size > _MAX_ZIP_TOTAL_SIZE:
+            raise _ZipValidationError(
+                f"ZIP archive expands beyond {_MAX_ZIP_TOTAL_SIZE} bytes"
+            )
+        if (
+            info.compress_type == zipfile.ZIP_STORED
+            and info.compress_size != info.file_size
+        ):
+            raise _ZipValidationError(
+                f"ZIP member {info.filename!r} has inconsistent stored-size metadata"
+            )
+        if (
+            info.file_size >= 1024 * 1024
+            and info.file_size
+            > max(info.compress_size, 1) * _MAX_ZIP_COMPRESSION_RATIO
+        ):
+            raise _ZipValidationError(
+                f"ZIP archive member {info.filename!r} has a suspicious compression ratio"
+            )
+    return members
+
+
+def _read_zip_member(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    maximum_size: int,
+) -> bytes:
+    if info.is_dir() or info.file_size > maximum_size:
+        raise _ZipValidationError(
+            f"ZIP member {info.filename!r} is not a file within the "
+            f"{maximum_size}-byte limit"
+        )
+    chunks: list[bytes] = []
+    size = 0
+    try:
+        with archive.open(info) as member:
+            while chunk := member.read(_ZIP_READ_CHUNK_SIZE):
+                size += len(chunk)
+                if size > maximum_size or size > info.file_size:
+                    raise _ZipValidationError(
+                        f"ZIP member {info.filename!r} expands beyond its declared size"
+                    )
+                chunks.append(chunk)
+    except _ZipValidationError:
+        raise
+    except (
+        EOFError,
+        UnicodeError,
+        lzma.LZMAError,
+        NotImplementedError,
+        OSError,
+        RuntimeError,
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        zlib.error,
+    ) as exc:
+        raise _ZipValidationError(
+            f"Unable to read or validate ZIP member {info.filename!r}: {exc}"
+        ) from exc
+    if size != info.file_size:
+        raise _ZipValidationError(
+            f"ZIP member {info.filename!r} size does not match its metadata"
+        )
+    return b"".join(chunks)
+
+
 def _validate_zip(path: Path) -> list[str]:
     with zipfile.ZipFile(path) as archive:
-        bad_member = archive.testzip()
-        if bad_member is not None:
-            raise ValueError(f"ZIP member {bad_member!r} failed its CRC check")
-        names = archive.namelist()
-        duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
-        if duplicates:
-            raise ValueError(f"ZIP archive contains duplicate member {duplicates[0]!r}")
-        if not any(not name.endswith("/") for name in names):
+        members = _validated_zip_members(archive)
+        if not any(not info.is_dir() for info in members.values()):
             raise ValueError("ZIP archive contains no files")
-        return names
+        for info in members.values():
+            if not info.is_dir():
+                _read_zip_member(
+                    archive,
+                    info,
+                    maximum_size=_MAX_ZIP_MEMBER_SIZE,
+                )
+        return list(members)
 
 
 def _validate_mscz(path: Path) -> None:
@@ -207,11 +320,18 @@ def _validate_mscz(path: Path) -> None:
 
 
 def _validate_mxl(path: Path) -> None:
-    names = _validate_zip(path)
-    if names.count(MUSICXML_CONTAINER) != 1:
-        raise ValueError(f"MXL archive must contain one {MUSICXML_CONTAINER}")
     with zipfile.ZipFile(path) as archive:
-        container = ET.fromstring(archive.read(MUSICXML_CONTAINER))
+        members = _validated_zip_members(archive)
+        container_info = members.get(MUSICXML_CONTAINER)
+        if container_info is None or container_info.is_dir():
+            raise ValueError(f"MXL archive must contain one {MUSICXML_CONTAINER}")
+        container = ET.fromstring(
+            _read_zip_member(
+                archive,
+                container_info,
+                maximum_size=_MAX_CONTAINER_XML_SIZE,
+            )
+        )
         if _local_name(container.tag) != "container":
             raise ValueError("MXL container has an invalid root")
         rootfiles_containers = [
@@ -238,7 +358,7 @@ def _validate_mxl(path: Path) -> None:
             reference = rootfile.get("full-path", "")
             member_path = PurePosixPath(reference)
             try:
-                member_info = archive.getinfo(reference)
+                member_info = members[reference]
             except KeyError:
                 member_info = None
             if (
@@ -246,7 +366,6 @@ def _validate_mxl(path: Path) -> None:
                 or member_path.is_absolute()
                 or ".." in member_path.parts
                 or reference in references
-                or names.count(reference) != 1
                 or member_info is None
                 or member_info.is_dir()
             ):
@@ -255,7 +374,15 @@ def _validate_mxl(path: Path) -> None:
                 )
             references.add(reference)
         first_rootfile = rootfiles[0].get("full-path", "")
-        _validate_musicxml_root(ET.fromstring(archive.read(first_rootfile)))
+        _validate_musicxml_root(
+            ET.fromstring(
+                _read_zip_member(
+                    archive,
+                    members[first_rootfile],
+                    maximum_size=_MAX_MUSICXML_SIZE,
+                )
+            )
+        )
 
 
 def _validate_mscx(path: Path) -> None:
