@@ -557,7 +557,7 @@ def _staff_scopes(score: ET.Element) -> list[_StaffScope]:
             f"Invalid MSCX XML: duplicate score staff id {duplicate_ids[0]!r}."
         )
 
-    if definitions and content_staves and len(definitions) != len(content_staves):
+    if definitions and len(definitions) != len(content_staves):
         raise ScoreFormatError(
             "Invalid MSCX XML: staff definition count does not match score staff count."
         )

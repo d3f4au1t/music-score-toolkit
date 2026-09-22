@@ -539,9 +539,16 @@ def test_ambiguous_idless_staff_definitions_fail_closed(definitions: str):
         transpose_mscx(xml, "C", "D")
 
 
-def test_idless_staff_definition_count_must_match_score_staves():
-    xml = b"""<museScore><Score><Part><Staff/><Staff/></Part>
-      <Staff id="1"><Measure/></Staff>
+@pytest.mark.parametrize(
+    "score_staves",
+    [
+        '<Staff id="1"><Measure/></Staff>',
+        "",
+    ],
+)
+def test_idless_staff_definition_count_must_match_score_staves(score_staves: str):
+    xml = f"""<museScore><Score><Part><Staff/><Staff/></Part>
+      {score_staves}
     </Score></museScore>"""
 
     with pytest.raises(ScoreFormatError, match="definition count"):
