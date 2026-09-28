@@ -234,12 +234,16 @@ def restore_exported_keys(payload: bytes, plan: tuple[KeyPart, ...]) -> bytes:
                         if transposition.find("double") is not None:
                             raise ValueError("Doubled instrument transposition is unsupported for key repair.")
                         for staff in targets:
+                            if staff not in shifts:
+                                raise ValueError("Exported transposition refers to an unknown staff.")
                             shifts[staff] = shift
                     if expected:
                         for key in item.findall("key"):
                             targets = ([_integer(key.get("number"), "key staff")]
                                        if "number" in key.attrib else list(shifts))
                             for staff in targets:
+                                if staff not in shifts:
+                                    raise ValueError("Exported key refers to an unknown staff.")
                                 identity = staff, cursor
                                 if identity in actual_keys:
                                     raise ValueError("Duplicate exported keys at the same musical position.")
@@ -298,6 +302,10 @@ def restore_exported_keys(payload: bytes, plan: tuple[KeyPart, ...]) -> bytes:
                 if existing is not None:
                     if _integer(_field(existing, "fifths"), "key fifths") != fifths:
                         raise ValueError("Exported key signature disagrees with the native score.")
+                    if key.mode and _field(existing, "mode") != key.mode:
+                        raise ValueError("Exported key mode disagrees with the native score.")
+                    if (existing.get("print-object", "yes") != "no") != key.visible:
+                        raise ValueError("Exported key visibility disagrees with the native score.")
                     continue
                 anchor = anchors.get(key.position)
                 if anchor is None:

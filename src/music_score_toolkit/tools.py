@@ -724,7 +724,9 @@ def convert_score(
 
     try:
         key_plan = ()
-        if destination.suffix.lower() in {".musicxml", ".xml", ".mxl"}:
+        verify_keys = (destination.suffix.lower() in {".musicxml", ".xml", ".mxl"}
+                       and source.suffix.lower() in {".mscx", ".mscz"})
+        if verify_keys:
             try:
                 key_plan = native_key_plan(source)
             except (OSError, ValueError, zipfile.BadZipFile) as exc:
@@ -785,7 +787,7 @@ def convert_score(
                 f"MuseScore failed to convert {source} to {destination} "
                 f"(exit code {completed.returncode}); staged output was not published."
             )
-        if key_plan:
+        if verify_keys:
             try:
                 if _file_snapshot(source.stat()) != _file_snapshot(source_stat):
                     raise ValueError("Source score changed during export.")
