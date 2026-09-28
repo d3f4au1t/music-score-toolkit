@@ -158,7 +158,7 @@ print(report.notes_changed)
 - Percussion staves and atonal signatures are deliberately left untouched.
   Custom key-signature definitions are preserved while their base key moves.
 - Stein-Zimmermann quarter-tone accidental glyphs follow the transposed note
-  spelling while tuning and display metadata are preserved. Other microtonal
+  spelling while preserving the transposed sounding pitch and display metadata. Other microtonal
   symbols remain unchanged when their alteration stays the same; unsupported
   or ambiguous respellings stop before output is written. Tablature,
   fret diagrams, mid-score staff/instrument changes, and ambiguous

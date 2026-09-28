@@ -341,8 +341,12 @@ def test_microtonal_glyph_follows_changed_note_alteration(
     assert root.findtext(".//Accidental/role") == "1"
     assert root.findtext(".//Accidental/bracket") == "1"
     assert root.findtext(".//Accidental/eid") == "preserved"
-    assert root.findtext(".//centOffset") == str(cents)
-    assert root.findtext(".//pitch") == "61"
+    expected_base = 62 if target == "Db" else 60
+    expected_cents = cents - 100 if target == "Db" else cents + 100
+    assert root.findtext(".//centOffset") == str(expected_cents)
+    assert root.findtext(".//pitch") == str(expected_base)
+    assert root.findtext(".//tpc") == ("16" if target == "Db" else "14")
+    assert expected_base + expected_cents / 100 == 61 + cents / 100
 
 
 @pytest.mark.parametrize(
@@ -364,7 +368,10 @@ def test_microtonal_glyph_uses_displayed_pitch_for_transposing_instrument(
 
     rendered, _ = transpose_mscx(xml, "C", "C#")
 
-    assert ET.fromstring(rendered).findtext(".//Accidental/subtype") == expected
+    root = ET.fromstring(rendered)
+    assert root.findtext(".//Accidental/subtype") == expected
+    assert int(root.findtext(".//pitch")) + float(root.findtext(".//centOffset")) / 100 == 61.5
+    assert root.findtext(".//tpc" if concert_pitch else ".//tpc2") in {"14", "18"}
 
 
 @pytest.mark.parametrize(

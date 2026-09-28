@@ -248,6 +248,7 @@ def _read_tpc(note: ET.Element, field_name: str) -> tuple[ET.Element | None, int
 
 
 def _transpose_microtonal_accidental(
+    note: ET.Element,
     subtype: ET.Element,
     old_tpc: int | None,
     new_tpc: int | None,
@@ -277,6 +278,47 @@ def _transpose_microtonal_accidental(
             f"Accidental {subtype.text!r} cannot be respelled safely for this interval; "
             "no output was written."
         )
+    if tpc_alteration(old_displayed) != 0:
+        raise ScoreFormatError(
+            "Microtonal source accidental requires a natural displayed base note; "
+            "no output was written."
+        )
+    cent_fields = note.findall("centOffset")
+    if len(cent_fields) > 1:
+        raise ScoreFormatError("MuseScore Note contains duplicate centOffset fields.")
+    assert quarter_tones is not None
+    if cent_fields:
+        try:
+            source_cents = float(cent_fields[0].text or "")
+        except ValueError as exc:
+            raise ScoreFormatError("Invalid MuseScore centOffset value.") from exc
+        if source_cents != quarter_tones * 50:
+            raise ScoreFormatError(
+                "Microtonal accidental conflicts with centOffset; no output was written."
+            )
+
+    # MuseScore stores these glyphs as an offset from a natural displayed note.
+    # Move the integer MIDI/TPC base and the cent offset in opposite directions:
+    # D-flat + 50 cents must be stored as D-natural - 50 cents with a quarter-flat.
+    pitch = note.find("pitch")
+    assert pitch is not None and pitch.text is not None
+    adjusted_pitch = int(pitch.text) - alteration_shift
+    if not 0 <= adjusted_pitch <= 127:
+        raise PitchRangeError(
+            "Microtonal respelling moves its MIDI base outside 0..127; no output was written."
+        )
+    for field_name in ("tpc", "tpc2"):
+        field = note.find(field_name)
+        if field is not None and field.text is not None:
+            adjusted_tpc = int(field.text) - 7 * alteration_shift
+            try:
+                tpc_alteration(adjusted_tpc)
+            except ValueError as exc:
+                raise ScoreFormatError("Microtonal base spelling is outside the supported range.") from exc
+            field.text = str(adjusted_tpc)
+    pitch.text = str(adjusted_pitch)
+    cent_field = cent_fields[0] if cent_fields else ET.SubElement(note, "centOffset")
+    cent_field.text = str(quarter_tones * 50 + 100 * alteration_shift)
     subtype.text = updated_subtype
     return True
 
@@ -299,7 +341,7 @@ def _transpose_accidental_subtype(
         return False
     if subtype.text not in _ACCIDENTAL_TO_ALTERATION:
         return _transpose_microtonal_accidental(
-            subtype, old_tpc, new_tpc, old_tpc2, new_tpc2, concert_pitch,
+            note, subtype, old_tpc, new_tpc, old_tpc2, new_tpc2, concert_pitch,
         )
 
     current_alteration = _ACCIDENTAL_TO_ALTERATION[subtype.text]
