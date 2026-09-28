@@ -114,6 +114,17 @@ _ALTERATION_TO_LEGACY_ACCIDENTAL = {
     2: "double sharp",
 }
 
+# SMuFL Stein-Zimmermann values in quarter-tone units (half a semitone).
+_MICROTONAL_ACCIDENTAL_TO_QUARTER_TONES = {
+    "accidentalThreeQuarterTonesFlatZimmermann": -3,
+    "accidentalQuarterToneFlatStein": -1,
+    "accidentalQuarterToneSharpStein": 1,
+    "accidentalThreeQuarterTonesSharpStein": 3,
+}
+_QUARTER_TONES_TO_MICROTONAL_ACCIDENTAL = {
+    value: subtype for subtype, value in _MICROTONAL_ACCIDENTAL_TO_QUARTER_TONES.items()
+}
+
 _SCORE_BOUNDARIES = frozenset({"Part", "SharedPart", "Staff", "Score"})
 
 _MAX_ARCHIVE_MEMBERS = 10_000
@@ -236,6 +247,40 @@ def _read_tpc(note: ET.Element, field_name: str) -> tuple[ET.Element | None, int
     return field, value
 
 
+def _transpose_microtonal_accidental(
+    subtype: ET.Element,
+    old_tpc: int | None,
+    new_tpc: int | None,
+    old_tpc2: int | None,
+    new_tpc2: int | None,
+    concert_pitch: bool | None,
+) -> bool:
+    old_displayed, new_displayed = old_tpc, new_tpc
+    if not concert_pitch and new_tpc2 is not None:
+        old_displayed, new_displayed = old_tpc2, new_tpc2
+    if old_displayed is None or new_displayed is None:
+        raise ScoreFormatError(
+            "Microtonal accidental has no unambiguous source written spelling; "
+            "no output was written."
+        )
+    alteration_shift = tpc_alteration(new_displayed) - tpc_alteration(old_displayed)
+    if not alteration_shift:
+        return False
+    quarter_tones = _MICROTONAL_ACCIDENTAL_TO_QUARTER_TONES.get(subtype.text)
+    updated_subtype = (
+        _QUARTER_TONES_TO_MICROTONAL_ACCIDENTAL.get(quarter_tones + 2 * alteration_shift)
+        if quarter_tones is not None
+        else None
+    )
+    if updated_subtype is None:
+        raise ScoreFormatError(
+            f"Accidental {subtype.text!r} cannot be respelled safely for this interval; "
+            "no output was written."
+        )
+    subtype.text = updated_subtype
+    return True
+
+
 def _transpose_accidental_subtype(
     note: ET.Element,
     old_tpc: int | None,
@@ -244,16 +289,18 @@ def _transpose_accidental_subtype(
     new_tpc2: int | None,
     concert_pitch: bool | None,
 ) -> bool:
-    """Update one standard accidental glyph without discarding its metadata."""
+    """Update a supported accidental glyph without discarding its metadata."""
 
     accidental = note.find("Accidental")
     if accidental is None:
         return False
     subtype = accidental.find("subtype")
-    if subtype is None or subtype.text not in _ACCIDENTAL_TO_ALTERATION:
-        # Microtonal and extension accidentals remain outside the normalization
-        # boundary; keep the complete node structurally intact.
+    if subtype is None:
         return False
+    if subtype.text not in _ACCIDENTAL_TO_ALTERATION:
+        return _transpose_microtonal_accidental(
+            subtype, old_tpc, new_tpc, old_tpc2, new_tpc2, concert_pitch,
+        )
 
     current_alteration = _ACCIDENTAL_TO_ALTERATION[subtype.text]
     matching_new_alterations = [

@@ -39,8 +39,11 @@ percussion staves remain unchanged.
 TPC values move along MuseScore's line-of-fifths representation instead of
 being regenerated from MIDI pitch alone. This preserves enharmonic intent,
 including zero-semitone respellings such as C-sharp to D-flat. Existing
-accidental nodes keep their role, bracket, EID, and layout metadata; unknown
-microtonal subtypes are left unchanged. The toolkit's double-accidental
+accidental nodes keep their role, bracket, EID, and layout metadata.
+Stein-Zimmermann quarter-tone symbols follow changes in the displayed note's
+alteration without changing its tuning. Unknown microtonal subtypes are kept
+only when their alteration stays the same; unsupported respellings fail closed.
+The toolkit's double-accidental
 readability policy is applied when an interval would otherwise create a
 triple accidental.
 

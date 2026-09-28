@@ -314,6 +314,91 @@ def test_microtonal_accidental_is_preserved_without_guessing_its_spelling():
     assert accidental.findtext("eid") == "microtonal"
 
 
+@pytest.mark.parametrize(
+    ("subtype", "cents", "target", "expected_subtype"),
+    [
+        ("accidentalQuarterToneSharpStein", 50, "Db", "accidentalQuarterToneFlatStein"),
+        ("accidentalQuarterToneSharpStein", 50, "C#", "accidentalThreeQuarterTonesSharpStein"),
+        ("accidentalQuarterToneFlatStein", -50, "C#", "accidentalQuarterToneSharpStein"),
+        ("accidentalQuarterToneFlatStein", -50, "Db", "accidentalThreeQuarterTonesFlatZimmermann"),
+        ("accidentalThreeQuarterTonesFlatZimmermann", -150, "C#", "accidentalQuarterToneFlatStein"),
+        ("accidentalThreeQuarterTonesSharpStein", 150, "Db", "accidentalQuarterToneSharpStein"),
+    ],
+)
+def test_microtonal_glyph_follows_changed_note_alteration(
+    subtype: str, cents: int, target: str, expected_subtype: str,
+):
+    xml = f"""<museScore><Score><Note>
+      <Accidental><subtype>{subtype}</subtype><role>1</role><bracket>1</bracket>
+        <eid>preserved</eid></Accidental>
+      <pitch>60</pitch><tpc>14</tpc><centOffset>{cents}</centOffset>
+    </Note></Score></museScore>"""
+
+    rendered, _ = transpose_mscx(xml, "C", target)
+    root = ET.fromstring(rendered)
+
+    assert root.findtext(".//Accidental/subtype") == expected_subtype
+    assert root.findtext(".//Accidental/role") == "1"
+    assert root.findtext(".//Accidental/bracket") == "1"
+    assert root.findtext(".//Accidental/eid") == "preserved"
+    assert root.findtext(".//centOffset") == str(cents)
+    assert root.findtext(".//pitch") == "61"
+
+
+@pytest.mark.parametrize(
+    ("concert_pitch", "expected"),
+    [(0, "accidentalQuarterToneFlatStein"), (1, "accidentalThreeQuarterTonesSharpStein")],
+)
+def test_microtonal_glyph_uses_displayed_pitch_for_transposing_instrument(
+    concert_pitch: int, expected: str,
+):
+    xml = f"""<museScore><Score><Style><concertPitch>{concert_pitch}</concertPitch></Style>
+      <Part><Staff id="1"/><Instrument>
+        <transposeDiatonic>-1</transposeDiatonic><transposeChromatic>-2</transposeChromatic>
+      </Instrument></Part>
+      <Staff id="1"><Measure><KeySig><concertKey>0</concertKey><actualKey>2</actualKey>
+        </KeySig><Note><pitch>60</pitch><tpc>14</tpc><tpc2>16</tpc2><centOffset>50</centOffset>
+        <Accidental><subtype>accidentalQuarterToneSharpStein</subtype></Accidental>
+        </Note></Measure></Staff>
+    </Score></museScore>"""
+
+    rendered, _ = transpose_mscx(xml, "C", "C#")
+
+    assert ET.fromstring(rendered).findtext(".//Accidental/subtype") == expected
+
+
+@pytest.mark.parametrize(
+    "subtype", ["accidentalQuarterToneSharpArrowUp", "accidentalThreeQuarterTonesSharpStein"],
+)
+def test_unsupported_microtonal_respelling_leaves_destination_untouched(
+    tmp_path: Path, subtype: str,
+):
+    source = tmp_path / "source.mscz"
+    destination = tmp_path / "output.mscz"
+    xml = f"""<museScore><Score><Note><pitch>60</pitch><tpc>14</tpc>
+      <Accidental><subtype>{subtype}</subtype></Accidental>
+    </Note></Score></museScore>"""
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("score.mscx", xml)
+    destination.write_bytes(b"existing score")
+
+    with pytest.raises(ScoreFormatError, match="cannot be respelled safely"):
+        transpose_mscz(source, destination, "C", "C#")
+
+    assert destination.read_bytes() == b"existing score"
+
+
+def test_microtonal_written_view_requires_source_written_spelling():
+    xml = b"""<museScore><Score><Part><Staff id="1"/><Instrument>
+      <transposeDiatonic>-1</transposeDiatonic><transposeChromatic>-2</transposeChromatic>
+      </Instrument></Part><Staff id="1"><Measure><Note><pitch>60</pitch><tpc>14</tpc>
+      <Accidental><subtype>accidentalQuarterToneSharpStein</subtype></Accidental>
+      </Note></Measure></Staff></Score></museScore>"""
+
+    with pytest.raises(ScoreFormatError, match="unambiguous source written spelling"):
+        transpose_mscx(xml, "C", "D")
+
+
 def test_rejects_out_of_range_pitch_by_default():
     xml = b"<museScore><Score><Note><pitch>127</pitch><tpc>15</tpc></Note></Score></museScore>"
     with pytest.raises(PitchRangeError):

@@ -157,7 +157,10 @@ print(report.notes_changed)
   engraving engine. Review complex notation in MuseScore after conversion.
 - Percussion staves and atonal signatures are deliberately left untouched.
   Custom key-signature definitions are preserved while their base key moves.
-- Microtonal accidental glyphs are preserved rather than guessed. Tablature,
+- Stein-Zimmermann quarter-tone accidental glyphs follow the transposed note
+  spelling while tuning and display metadata are preserved. Other microtonal
+  symbols remain unchanged when their alteration stays the same; unsupported
+  or ambiguous respellings stop before output is written. Tablature,
   fret diagrams, mid-score staff/instrument changes, and ambiguous
   transposing-instrument key changes fail closed when direct XML editing could
   make their visual and sounding representations disagree.
