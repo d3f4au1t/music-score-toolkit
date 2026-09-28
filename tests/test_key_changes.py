@@ -104,7 +104,7 @@ def test_legacy_modulations_derive_concert_key_using_instrument_and_view(concert
     "<location><fractions>-1/4</fractions></location>",
     "<tick>480</tick>",
 ])
-def test_ambiguous_interior_changes_fail_closed(operation, extra):
+def test_interior_changes_without_timing_metadata_fail_closed(operation, extra):
     xml = score(f"<Measure><voice>{key(0, 2)}{note()}{key(5, -5)}"
                 f"{note(59, 19, 9)}{extra}</voice></Measure>")
     with pytest.raises(ScoreFormatError, match="tick-aware"):
@@ -170,7 +170,7 @@ def test_unsupported_key_timing_leaves_existing_archive_untouched(tmp_path, oper
     with zipfile.ZipFile(source, "w") as archive:
         archive.writestr("score.mscx", xml)
     destination.write_bytes(b"previous output")
-    with pytest.raises(ScoreFormatError, match="Mid-measure"):
+    with pytest.raises(ScoreFormatError, match="tick-aware"):
         if operation == "transpose":
             transpose_mscz(source, destination, "C", "D")
         else:
@@ -242,10 +242,10 @@ def test_all_conventional_modulations_preserve_pitch_and_match_local_signatures(
 
 
 @pytest.mark.parametrize("operation", ["transpose", "instrument"])
-def test_trailing_courtesy_signature_is_not_treated_as_next_measures_key(operation):
+def test_trailing_signature_without_meter_cannot_be_classified_as_courtesy(operation):
     xml = score(f"<Measure><voice>{key(0, 2)}{note()}{key(5, -5)}</voice></Measure>"
                 f"<Measure><voice>{note()}</voice></Measure>")
-    with pytest.raises(ScoreFormatError, match="courtesy"):
+    with pytest.raises(ScoreFormatError, match="measure length or time signature"):
         transform(xml, operation)
 
 
@@ -280,10 +280,60 @@ def test_grace_before_initial_key_does_not_make_key_look_like_a_modulation():
 
 def test_cursor_cannot_move_notes_across_a_barline_key_change():
     xml = score(f"<Measure><voice>{key(0, 2)}{note()}</voice></Measure>"
-                f"<Measure><voice>{key(5, -5)}<location><fractions>-1/4</fractions>"
+                f"<Measure len='1'><voice>{key(5, -5)}<location><fractions>-1/4</fractions>"
                 f"</location>{note()}</voice></Measure>")
-    with pytest.raises(ScoreFormatError, match="explicit cursor"):
+    with pytest.raises(ScoreFormatError, match="outside its measure"):
         retarget_instrument_mscx(xml)
+
+
+@pytest.mark.parametrize("operation", ["transpose", "instrument"])
+def test_mid_measure_key_reaches_other_voice_at_same_beat(operation):
+    xml = score(f"<Measure len='1'><voice>{key(0, 2)}{note()}{key(5, -5)}"
+                f"{note(59, 19, 9)}</voice><voice>{note(59, 19, 21)}"
+                f"{note(59, 19, 9)}</voice></Measure>")
+    rendered, _ = transform(xml, operation)
+    voices = ET.fromstring(rendered).findall(".//Measure/voice")
+    assert [[n.findtext("tpc2") for n in v.iter("Note")] for v in voices] == (
+        [["18", "11"], ["23", "11"]] if operation == "transpose"
+        else [["14", "19"], ["19", "19"]]
+    )
+
+
+@pytest.mark.parametrize("operation", ["transpose", "instrument"])
+def test_relative_cursor_places_chord_symbol_in_earlier_key(operation):
+    xml = score(f"<Measure len='1'><voice>{key(0, 2)}{note()}{key(5, -5)}"
+                f"{note(59, 19, 9)}<location><fractions>-1/2</fractions></location>"
+                "<Harmony><root>21</root></Harmony></voice></Measure>")
+    rendered, _ = transform(xml, operation)
+    root = ET.fromstring(rendered)
+    assert root.findtext(".//Harmony/root") == ("23" if operation == "transpose" else "19")
+    assert root.findtext(".//location/fractions") == "-1/2"
+
+
+@pytest.mark.parametrize("operation", ["transpose", "instrument"])
+def test_end_of_measure_courtesy_does_not_change_next_measure_context(operation):
+    whole = note().replace("quarter", "whole")
+    xml = score(f"<Measure len='1'><voice>{key(0, 2)}{whole}{key(5, -5)}"
+                f"</voice></Measure><Measure><voice>{note(59, 19, 21)}</voice></Measure>")
+    rendered, _ = transform(xml, operation)
+    root = ET.fromstring(rendered)
+    assert [n.findtext("tpc2") for n in root.iter("Note")] == (
+        ["18", "23"] if operation == "transpose" else ["14", "19"]
+    )
+    # The printed courtesy still transposes; it just must not change the key map.
+    assert [k.findtext("actualKey") for k in root.iter("KeySig")] == (
+        ["4", "-3"] if operation == "transpose" else ["0", "5"]
+    )
+
+
+def test_key_after_cursor_rewind_to_zero_is_the_opening_key():
+    xml = score(f"<Measure len='1'><voice>{note(59, 19, 9)}"
+                f"<location><fractions>-1/4</fractions></location>{key(5, -5)}"
+                "</voice></Measure>")
+    rendered, _ = transpose_mscx(xml, "B", "C")
+    root = ET.fromstring(rendered)
+    assert root.findtext(".//Note/tpc2") == "16"
+    assert len(list(root.iter("KeySig"))) == 1
 
 
 @pytest.mark.parametrize("operation", ["transpose", "instrument"])

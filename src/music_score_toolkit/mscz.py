@@ -12,6 +12,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
+from bisect import bisect_right
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -29,6 +30,15 @@ from .keys import (
     tpc_pitch_class,
     transpose_key_signature_by_tpc,
     transpose_tpc,
+)
+from .timing import (
+    MeasureTiming,
+    ScoreTimingError,
+    opening_meter,
+    read_measure_timing,
+)
+from .timing import (
+    advances_position as _advances_key_position,
 )
 
 
@@ -133,10 +143,6 @@ _QUARTER_TONES_TO_MICROTONAL_ACCIDENTAL = {
 }
 
 _SCORE_BOUNDARIES = frozenset({"Part", "SharedPart", "Staff", "Score"})
-_GRACE_TAGS = frozenset({
-    "appoggiatura", "acciaccatura", "grace4", "grace16", "grace32",
-    "grace8after", "grace16after", "grace32after",
-})
 
 _MAX_ARCHIVE_MEMBERS = 10_000
 _MAX_ARCHIVE_MEMBER_SIZE = 2 * 1024 * 1024 * 1024
@@ -748,12 +754,6 @@ def _first_measure(staff: ET.Element) -> ET.Element | None:
     return next((child for child in staff if child.tag == "Measure"), None)
 
 
-def _advances_key_position(element: ET.Element) -> bool:
-    if element.tag == "Chord":
-        return not any(child.tag in _GRACE_TAGS for child in element)
-    return element.tag in {"Rest", "Note", "MeasureRepeat"}
-
-
 def _opening_key_signature(measure: ET.Element) -> ET.Element | None:
     # Each voice starts at the measure boundary. A key at the start of a later
     # voice still applies to earlier-serialized voices at that same boundary.
@@ -763,7 +763,20 @@ def _opening_key_signature(measure: ET.Element) -> ET.Element | None:
                 return element
             if _advances_key_position(element) or element.tag in {"location", "tick"}:
                 break
+    if measure.find(".//KeySig") is not None and any(
+        item.tag in {"location", "tick"} for voice in measure.findall("voice") for item in voice
+    ):
+        timing = _read_key_timing(measure, opening_meter(measure))
+        return next((item for item, tick in timing.positions.items()
+                     if item.tag == "KeySig" and tick == 0), None)
     return None
+
+
+def _read_key_timing(measure: ET.Element, meters: tuple[ET.Element, ...]) -> MeasureTiming:
+    try:
+        return read_measure_timing(measure, meters)
+    except ScoreTimingError as exc:
+        raise ScoreFormatError(f"Cannot resolve tick-aware key-change timing: {exc}") from exc
 
 
 def _opening_key(
@@ -828,9 +841,9 @@ def _staff_key_regions(
 
     Barline changes apply to every voice, regardless of serialization order.
     Within one voice, sequential changes need no duration arithmetic. Multiple
-    voices at an interior change, explicit cursor movements in a changing-key
-    staff, and trailing courtesy candidates require a full tick map and are
-    deliberately rejected instead of guessing.
+    voices at an interior change, relative cursor movements, and trailing
+    courtesy signatures use an exact measure-local timing map. Unsupported or
+    incomplete timing is rejected instead of guessed.
     """
 
     musical_tags = {"Note", "Harmony"}
@@ -844,7 +857,9 @@ def _staff_key_regions(
     regions: list[_KeyRegion] = []
     covered: set[ET.Element] = set()
     current = _OpeningKey(0, None)
+    meters: tuple[ET.Element, ...] = ()
     for measure in scope.content.findall("Measure"):
+        meters = opening_meter(measure, meters)
         streams = measure.findall("voice") or [measure]
         initial_keys: list[ET.Element] = []
         interior_keys: list[ET.Element] = []
@@ -869,6 +884,17 @@ def _staff_key_regions(
         if set(measure_keys) != set(initial_keys + interior_keys):
             raise ScoreFormatError("Key change has an unsupported score position; no output was written.")
         covered.update(measure_keys)
+        trailing_key = False
+        if interior_keys and len(streams) == 1:
+            items = list(streams[0])
+            trailing_key = not any(_advances_key_position(item)
+                                   for item in items[items.index(interior_keys[-1]) + 1:])
+        if (cursor_moves and changing_keys) or (interior_keys and len(streams) > 1) or trailing_key:
+            timed_regions, current = _timed_key_regions(
+                scope, measure, meters, current, concert_pitch,
+            )
+            regions.extend(timed_regions)
+            continue
         if initial_keys:
             current = _key_context(scope, initial_keys[0], concert_pitch)
             for key in initial_keys[1:]:
@@ -882,26 +908,9 @@ def _staff_key_regions(
                     raise ScoreFormatError("Conflicting key signatures at one measure boundary.")
 
         music = tuple(e for e in _bounded_descendants(measure) if e.tag in musical_tags)
-        if cursor_moves and changing_keys:
-            raise ScoreFormatError(
-                "Key changes with explicit cursor movements require tick-aware respelling; "
-                "no output was written. Re-save a simplified standalone part in MuseScore first."
-            )
         if not interior_keys:
             regions.append(_KeyRegion(current, music))
             continue
-        if len(streams) > 1 or cursor_moves:
-            raise ScoreFormatError(
-                "Mid-measure key changes with multiple voices or explicit cursor movements "
-                "require tick-aware respelling; no output was written. "
-                "Move the key change to a measure boundary in MuseScore first."
-            )
-        last_key_index = list(streams[0]).index(interior_keys[-1])
-        if not any(_advances_key_position(item) for item in list(streams[0])[last_key_index + 1:]):
-            raise ScoreFormatError(
-                "A trailing key signature may be an end-of-measure courtesy, not a key change; "
-                "tick-aware respelling is required and no output was written."
-            )
 
         # Harmony placed before a KeySig at the same onset belongs to the new
         # key too. Buffer non-duration events until the next chord/rest.
@@ -924,6 +933,40 @@ def _staff_key_regions(
     if Counter(assigned) != Counter(all_music) or set(signatures) != covered:
         raise ScoreFormatError("Key changes require measure-scoped music; no output was written.")
     return regions
+
+
+def _timed_key_regions(
+    scope: _StaffScope,
+    measure: ET.Element,
+    meters: tuple[ET.Element, ...],
+    previous: _OpeningKey,
+    concert_pitch: bool | None,
+) -> tuple[list[_KeyRegion], _OpeningKey]:
+    timing = _read_key_timing(measure, meters)
+    keys = {}
+    for element, position in timing.positions.items():
+        if element.tag != "KeySig" or position == timing.length:
+            continue  # End-of-measure courtesy signs do not change the key map.
+        key = _key_context(scope, element, concert_pitch)
+        if position in keys:
+            other = keys[position]
+            if (key.signature != other.signature
+                    or _display_key(scope, key, concert_pitch) != _display_key(scope, other, concert_pitch)
+                    or _key_signature_kind(element) != _key_signature_kind(other.key_signature)):
+                raise ScoreFormatError("Conflicting key signatures at the same musical time.")
+        keys[position] = key
+    positions = sorted(keys)
+    contexts = [previous, *(keys[position] for position in positions)]
+    members: list[list[ET.Element]] = [[] for _ in contexts]
+    for item, position in timing.positions.items():
+        if item.tag in _SCORE_BOUNDARIES:
+            continue
+        region = bisect_right(positions, position)
+        members[region].extend(
+            e for e in (item, *_bounded_descendants(item)) if e.tag in {"Note", "Harmony"}
+        )
+    return ([_KeyRegion(key, tuple(elements)) for key, elements in zip(contexts, members)],
+            contexts[-1])
 
 
 def _display_key(
