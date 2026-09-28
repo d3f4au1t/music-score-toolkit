@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Support local key changes during instrument conversion and transposition,
+  including multi-voice measure boundaries and sequential single-voice changes.
+  Keep concert/written notes and chord symbols aligned with enharmonic key
+  signatures; guard ambiguous cursor timing and trailing courtesy keys.
+- Add an opt-in MuseScore round-trip regression for a two-voice modulating score.
 - Add `music-score instrument` for preparing C/B-flat/A/F/E-flat parts without
   changing sounding pitches, including part selection, written notes and chord
   symbols, key signatures, accidental metadata, and optional PDF export.

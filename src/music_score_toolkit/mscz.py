@@ -828,8 +828,9 @@ def _staff_key_regions(
 
     Barline changes apply to every voice, regardless of serialization order.
     Within one voice, sequential changes need no duration arithmetic. Multiple
-    voices or explicit cursor movements around an interior change require a
-    full tick map and are deliberately rejected instead of guessing.
+    voices at an interior change, explicit cursor movements in a changing-key
+    staff, and trailing courtesy candidates require a full tick map and are
+    deliberately rejected instead of guessing.
     """
 
     musical_tags = {"Note", "Harmony"}

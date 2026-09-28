@@ -75,7 +75,8 @@ def retarget_instrument_mscx(
     transposition and part labels, not the playback sound or clef. Linked
     excerpts and instrument changes require a standalone part prepared in
     MuseScore. Key changes are supported at measure boundaries across voices,
-    and within a single voice without explicit cursor movements.
+    and within a single voice. Changing-key staves with explicit cursor moves
+    or ambiguous trailing courtesy signatures need tick-aware processing.
     """
 
     target = normalize_key(to_instrument)

@@ -227,6 +227,9 @@ def test_all_conventional_modulations_preserve_pitch_and_match_local_signatures(
                 assert measure.findtext(".//Harmony/root") == str(14 + (expected if concert else actual))
         for target in INSTRUMENT_INTERVALS:
             rendered, _ = retarget_instrument_mscx(xml, target)
+            repeated, report = retarget_instrument_mscx(rendered, target)
+            assert repeated == rendered
+            assert report.score_entries_changed == 0
             root = ET.fromstring(rendered)
             assert [int(n.findtext("pitch")) for n in root.iter("Note")] == source_pitches
             for index, measure in enumerate(root.findall("./Score/Staff/Measure")):
@@ -281,3 +284,20 @@ def test_cursor_cannot_move_notes_across_a_barline_key_change():
                 f"</location>{note()}</voice></Measure>")
     with pytest.raises(ScoreFormatError, match="explicit cursor"):
         retarget_instrument_mscx(xml)
+
+
+@pytest.mark.parametrize("operation", ["transpose", "instrument"])
+def test_each_staff_tracks_its_own_modulations(operation):
+    root = ET.fromstring(score(f"<Measure>{key(0, 2)}{note()}</Measure>"
+                               f"<Measure>{key(5, -5)}{note(59, 19, 9)}</Measure>"))
+    root.find("Score/Part").insert(1, ET.fromstring('<Staff id="2"/>'))
+    root.find("Score").append(ET.fromstring(
+        f'<Staff id="2"><Measure>{key(0, 2)}{note()}</Measure>'
+        f'<Measure>{key(3, 5)}{note(69, 17, 19)}</Measure></Staff>'
+    ))
+    rendered, _ = transform(ET.tostring(root), operation)
+    staves = ET.fromstring(rendered).findall("Score/Staff")
+    assert [[n.findtext("tpc2") for n in staff.iter("Note")] for staff in staves] == (
+        [["18", "11"], ["18", "9"]] if operation == "transpose"
+        else [["14", "19"], ["14", "17"]]
+    )

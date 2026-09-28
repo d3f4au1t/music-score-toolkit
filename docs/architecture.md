@@ -39,6 +39,23 @@ visible signature. Custom key-signature definitions remain structurally
 untouched while their conventional base key moves; atonal signatures and
 percussion staves remain unchanged.
 
+Local key regions keep concert notes, written notes, and chord symbols aligned
+when a modulation requires an enharmonic signature. A measure-boundary key
+applies to every voice even when its XML is serialized after another voice's
+notes. A sequential single-voice change applies at its onset; grace chords and
+harmonies at that onset share the new key. Instrument conversion uses the same
+regions while preserving sounding pitches. Key definitions are rewritten only
+after all source note/harmony contexts have been read.
+
+This is deliberately not a full MuseScore tick evaluator. Changing-key staves
+with explicit cursor moves, multi-voice mid-measure changes, and trailing keys
+that might be courtesy announcements fail closed when local respelling is
+needed. A uniform transposition that requires no key-dependent respelling can
+still use one interval across those notes. The ordering rules follow MuseScore's
+[measure reader](https://github.com/musescore/MuseScore/blob/v4.7.4/src/engraving/rw/read400/measurerw.cpp):
+voices restart at the measure tick, grace chords do not advance it, and keys at
+the measure's end are courtesy announcements rather than key-map changes.
+
 TPC values move along MuseScore's line-of-fifths representation instead of
 being regenerated from MIDI pitch alone. This preserves enharmonic intent,
 including zero-semitone respellings such as C-sharp to D-flat. Existing

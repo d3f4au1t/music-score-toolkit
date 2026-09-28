@@ -111,8 +111,12 @@ Octave-transposing variants such as bass clarinet are not separate presets yet.
 For a multi-part score, add `--part 2` (part numbers start at 1). Omitting it
 lists the available choices in an error. Multi-part input must already be in
 written-pitch view; the other parts are preserved. The command currently
-requires MuseScore 4 format, a score without linked excerpts, and a selected part without mid-score
-key/instrument changes, custom or atonal keys, percussion, TAB, or fret diagrams.
+requires MuseScore 4 format, a score without linked excerpts, and a selected part without
+mid-score instrument changes, custom or atonal keys, percussion, TAB, or fret diagrams.
+Key changes are supported at measure boundaries across all voices, and inside a
+single voice. Notes and chord symbols use each section's own key spelling.
+Changing-key staves with explicit timing/cursor moves, multi-voice changes inside
+a measure, and ambiguous trailing courtesy signatures still fail safely.
 Export a standalone part from MuseScore when an archive includes linked excerpts.
 Open and save older score files in MuseScore 4 before instrument conversion.
 
@@ -187,7 +191,7 @@ retarget_instrument_mscz("concert-part.mscz", "bb-part.mscz", "Bb")
   symbols remain unchanged when their alteration stays the same; unsupported
   or ambiguous respellings stop before output is written. Tablature,
   fret diagrams, mid-score staff/instrument changes, and ambiguous
-  transposing-instrument key changes fail closed when direct XML editing could
+  key-change timing fail closed when direct XML editing could
   make their visual and sounding representations disagree.
 - MSCZ members, CRCs, duplicate names, XML shape, and container references are
   validated before output replaces an existing file.
@@ -204,7 +208,13 @@ pytest
 ```
 
 Tests include generated XML cases and both MSCZ files from the source
-repositories. External desktop applications are isolated from unit tests.
+repositories. External desktop applications are isolated from unit tests. To
+also verify modulations, multiple voices, instrument conversion, sounding pitches,
+and score markings using an installed MuseScore 4 exporter:
+
+```bash
+MUSIC_SCORE_MUSESCORE_TESTS=1 pytest tests/test_musescore_integration.py
+```
 
 ## Repository map
 
