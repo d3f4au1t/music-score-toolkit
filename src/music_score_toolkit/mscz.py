@@ -997,6 +997,37 @@ def _written_tpc_adjustment(
     return normalized_written - raw_written
 
 
+def _harmony_tpc_shift(
+    scope: _StaffScope,
+    tpc_shift: int,
+    written_adjustment: int,
+    concert_pitch: bool | None,
+) -> int:
+    if concert_pitch or not tpc_shift:
+        return tpc_shift
+    instrument_shift = _instrument_tpc_shift(scope.instrument)
+    opening = _opening_key(scope, concert_pitch)
+    if not instrument_shift or opening.signature is None:
+        return tpc_shift
+
+    source_written = None
+    if opening.key_signature is not None:
+        for field_name in ("actualKey", "accidental"):
+            source_written = _read_integer_field(opening.key_signature, field_name)
+            if source_written is not None:
+                break
+    if source_written is None:
+        source_written = _normalize_written_signature(
+            transpose_key_signature_by_tpc(opening.signature, -instrument_shift),
+            _effective_key_preference(scope),
+        )
+    # Chord roots are already stored in the source's displayed spelling,
+    # whereas written notes are rebuilt from concert TPC. Undo the source
+    # key's enharmonic adjustment before applying the destination's adjustment.
+    source_adjustment = source_written - (opening.signature - instrument_shift)
+    return tpc_shift + written_adjustment - source_adjustment
+
+
 def _key_signature_folds_enharmonically(
     key_signature: ET.Element,
     tpc_shift: int,
@@ -1317,10 +1348,13 @@ def transpose_mscx(
                     has_instrument_transposition=has_instrument_transposition,
                 ):
                     note_count += 1
+            harmony_shift = _harmony_tpc_shift(
+                scope,
+                note_tpc_shift,
+                written_adjustment,
+                context_concert_pitch,
+            )
             for harmony in _bounded_elements(scope.content, "Harmony"):
-                harmony_shift = note_tpc_shift
-                if not context_concert_pitch:
-                    harmony_shift += written_adjustment
                 if _transpose_harmony(harmony, harmony_shift):
                     harmony_count += 1
             for key_signature in _bounded_elements(scope.content, "KeySig"):

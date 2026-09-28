@@ -753,6 +753,60 @@ def test_written_interval_is_respelled_once_for_double_accidentals():
     assert root.findtext(".//Note/tpc2") == "22"
 
 
+@pytest.mark.parametrize(
+    ("target", "expected_root", "expected_bass"),
+    [("C", 16, 20), ("C#", 11, 15), ("A", 19, 23), ("B", 9, 13)],
+)
+@pytest.mark.parametrize("preference", ["auto", "none"])
+def test_chords_remove_source_written_key_respelling(
+    target: str, expected_root: int, expected_bass: int, preference: str,
+):
+    xml = f"""<museScore><Score><Style><concertPitch>0</concertPitch></Style>
+      <Part><Staff id="1"/><preferSharpFlat>{preference}</preferSharpFlat><Instrument>
+        <transposeDiatonic>-1</transposeDiatonic><transposeChromatic>-2</transposeChromatic>
+      </Instrument></Part>
+      <Staff id="1"><Measure><voice>
+        <KeySig><concertKey>5</concertKey><actualKey>-5</actualKey></KeySig>
+        <Harmony><root>9</root><base>13</base><name>maj7</name></Harmony>
+        <Harmony><harmonyInfo><root>9</root><bass>13</bass></harmonyInfo></Harmony>
+        <Chord><Note><pitch>59</pitch><tpc>19</tpc><tpc2>9</tpc2></Note></Chord>
+      </voice></Measure></Staff>
+    </Score></museScore>"""
+
+    rendered, report = transpose_mscx(xml, "B", target)
+    root = ET.fromstring(rendered)
+
+    assert [int(harmony.findtext(".//root")) for harmony in root.iter("Harmony")] == [
+        expected_root, expected_root,
+    ]
+    assert root.findtext(".//Harmony/base") == str(expected_bass)
+    assert root.findtext(".//harmonyInfo/bass") == str(expected_bass)
+    assert root.findtext(".//Harmony/name") == "maj7"
+    assert root.findtext(".//Note/tpc2") == str(expected_root)
+    if target == "B":
+        assert rendered == xml.encode()
+        assert report.chord_symbols_changed == 0
+
+
+def test_concert_pitch_chords_ignore_written_source_respelling():
+    xml = b"""<museScore><Score><Style><concertPitch>1</concertPitch></Style>
+      <Part><Staff id="1"/><Instrument>
+        <transposeDiatonic>-1</transposeDiatonic><transposeChromatic>-2</transposeChromatic>
+      </Instrument></Part>
+      <Staff id="1"><Measure><KeySig><concertKey>5</concertKey><actualKey>-5</actualKey>
+        </KeySig><Harmony><root>19</root><base>23</base></Harmony>
+        <Note><pitch>59</pitch><tpc>19</tpc><tpc2>9</tpc2></Note>
+      </Measure></Staff>
+    </Score></museScore>"""
+
+    rendered, _ = transpose_mscx(xml, "B", "C")
+    root = ET.fromstring(rendered)
+
+    assert root.findtext(".//Harmony/root") == "14"
+    assert root.findtext(".//Harmony/base") == "18"
+    assert root.findtext(".//Note/tpc2") == "16"
+
+
 def test_actual_key_is_recomputed_from_raw_instrument_not_old_enharmonic_relation():
     xml = b"""<museScore><Score>
       <Part><Staff id="1"><StaffType group="pitched"/></Staff><Instrument>
