@@ -117,6 +117,9 @@ Key changes are supported at measure boundaries across all voices, and inside a
 single voice. Notes and chord symbols use each section's own key spelling.
 Changing-key staves with explicit timing/cursor moves, multi-voice changes inside
 a measure, and ambiguous trailing courtesy signatures still fail safely.
+Keep MSCZ as the master file: MuseScore 4.7.4's MusicXML exporter was observed to
+omit mid-measure key signatures, even from unmodified input. Native MSCZ/MSCX
+round trips retain those changes; this toolkit does not fix that external exporter.
 Export a standalone part from MuseScore when an archive includes linked excerpts.
 Open and save older score files in MuseScore 4 before instrument conversion.
 
@@ -209,8 +212,8 @@ pytest
 
 Tests include generated XML cases and both MSCZ files from the source
 repositories. External desktop applications are isolated from unit tests. To
-also verify modulations, multiple voices, instrument conversion, sounding pitches,
-and score markings using an installed MuseScore 4 exporter:
+also verify barline and mid-measure modulations, multiple voices, instrument
+conversion, sounding pitches, and score markings using an installed MuseScore 4 exporter:
 
 ```bash
 MUSIC_SCORE_MUSESCORE_TESTS=1 pytest tests/test_musescore_integration.py

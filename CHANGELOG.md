@@ -6,7 +6,9 @@
   including multi-voice measure boundaries and sequential single-voice changes.
   Keep concert/written notes and chord symbols aligned with enharmonic key
   signatures; guard ambiguous cursor timing and trailing courtesy keys.
-- Add an opt-in MuseScore round-trip regression for a two-voice modulating score.
+- Add opt-in MuseScore round-trip regressions for two-voice and mid-measure modulations.
+  Verify keys through native reloads as well as MusicXML, and document MuseScore
+  4.7.4's omission of mid-measure signatures in MusicXML exports.
 - Add `music-score instrument` for preparing C/B-flat/A/F/E-flat parts without
   changing sounding pitches, including part selection, written notes and chord
   symbols, key signatures, accidental metadata, and optional PDF export.

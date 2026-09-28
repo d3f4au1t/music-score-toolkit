@@ -40,8 +40,40 @@ def sounding_notes(root):
     return result
 
 
-def test_modulating_score_keeps_all_voices_keys_chords_and_markings(tmp_path):
+def native_written_keys(root):
+    staff = root.find("Score/Staff")
+    first_voice = staff.find("Measure/voice")
+    keys = []
+    for item in first_voice:
+        if item.tag == "KeySig":
+            break
+        if item.tag == "Chord":
+            keys.append(0)  # MuseScore may omit the initial C signature.
+            break
+    keys.extend(int(k.findtext("actualKey", k.findtext("concertKey", "0")))
+                for k in staff.iter("KeySig"))
+    return keys
+
+
+@pytest.mark.parametrize("layout", ["two_voices", "single_voice"])
+def test_modulating_score_keeps_all_voices_keys_chords_and_markings(tmp_path, layout):
     fixture = Path(__file__).parent / "fixtures" / "modulating-two-voices.musicxml"
+    if layout == "single_voice":
+        # Put the first note of each section into one measure. This exercises
+        # actual in-measure modulation serialization, not just synthetic MSCX.
+        tree = ET.parse(fixture)
+        part = tree.getroot().find("part")
+        measures = list(part)
+        contents = []
+        for measure in measures:
+            first_note = measure.find("note")
+            contents.extend(child for child in measure if child.tag != "backup"
+                            and (child.tag != "note" or child is first_note))
+            part.remove(measure)
+        measure = ET.SubElement(part, "measure", {"number": "1"})
+        measure.extend(contents)
+        fixture = tmp_path / "single-voice.musicxml"
+        tree.write(fixture, encoding="utf-8", xml_declaration=True)
     source, bb, raised, restored = [tmp_path / f"{name}.mscz" for name in (
         "source", "bb", "raised", "restored",
     )]
@@ -50,7 +82,7 @@ def test_modulating_score_keeps_all_voices_keys_chords_and_markings(tmp_path):
     convert_score(source, baseline)
     original = ET.parse(baseline).getroot()
     notes = sounding_notes(original)
-    assert len(notes) == 20
+    assert len(notes) == (20 if layout == "two_voices" else 4)
     retarget_instrument_mscz(source, bb)
     transpose_mscz(bb, raised, "C", "D")
     retarget_instrument_mscz(bb, restored, "C")
@@ -63,7 +95,17 @@ def test_modulating_score_keeps_all_voices_keys_chords_and_markings(tmp_path):
         convert_score(score, output)
         root = ET.parse(output).getroot()
         assert sounding_notes(root) == [(m, v, d, pitch + shift) for m, v, d, pitch in notes]
-        assert [int(k.text) for k in root.findall(".//attributes/key/fifths")] == keys
+        native = score.with_name(f"{score.stem}-reopened.mscx")
+        convert_score(score, native)
+        assert native_written_keys(ET.parse(native).getroot()) == keys
+        exported_keys = [int(k.text) for k in root.findall(".//attributes/key/fifths")]
+        if layout == "single_voice":
+            # MuseScore 4.7.4 omits interior keys in MusicXML even for the
+            # unmodified input. Native reload above must preserve every key;
+            # don't mistake this exporter limitation for lost MSCZ content.
+            assert exported_keys in (keys, keys[:1])
+        else:
+            assert exported_keys == keys
         assert [(h.findtext("root/root-step"), h.findtext("root/root-alter", "0"))
                 for h in root.iter("harmony")] == chords
         for tag in ("work-title", "words", "per-minute"):
