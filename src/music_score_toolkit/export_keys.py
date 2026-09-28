@@ -324,6 +324,8 @@ def restore_exported_keys(payload: bytes, plan: tuple[KeyPart, ...]) -> bytes:
     offsets = _xml_offsets(payload, root)
     edits = sorted((offsets[anchor], b"".join(ET.tostring(e, encoding="utf-8") for e in elements))
                    for anchor, elements in insertions.items())
+    if len(payload) + sum(len(addition) for _, addition in edits) > _MAX_XML:
+        raise ValueError("Repaired MusicXML would exceed the supported size limit.")
     chunks = []
     previous = 0
     for offset, addition in edits:

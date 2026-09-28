@@ -122,9 +122,26 @@ the score must provide a time signature or explicit measure length. Missing or
 malformed rhythms, legacy absolute ticks, cursor moves between staves/voices,
 local meter stretching, measure repeats, and ambiguous tremolos still fail safely.
 Cursor moves inside tuplets or grace groups also remain unsupported.
-Keep MSCZ as the master file: MuseScore 4.7.4's MusicXML exporter was observed to
-omit mid-measure key signatures, even from unmodified input. Native MSCZ/MSCX
-round trips retain those changes; this toolkit does not fix that external exporter.
+Keep MSCZ as the master file. MuseScore 4.7.4's MusicXML exporter can omit
+mid-measure key signatures, even from unmodified input. The toolkit's `convert`
+command now restores missing conventional signatures when exporting a standalone
+MuseScore 4 MSCZ/MSCX file to MusicXML, XML, or compressed MXL. It checks the
+affected measures' sounding pitches, note durations, staff assignments, and exact
+beat positions against the native source before inserting any signature. Existing
+MusicXML bytes—including notes, text, markings, layout, comments, and the DOCTYPE—
+are left unchanged; MXL assets and archive metadata are retained.
+
+Repair supports multiple parts, staves, voices, and the exact rhythms described
+above, in written- or concert-pitch view. An already complete export is unchanged.
+Conflicting keys, unsupported timing, changed source files, or an uncertain match
+stop conversion without replacing the destination. Repair requires an existing
+MusicXML boundary at the missing key's beat; it does not split notes or invent
+rhythm. Custom/atonal interior keys, microtonal tuning, mid-score instrument/staff
+changes, and linked excerpts are not supported by this repair. It does not cover
+exports performed directly in MuseScore or conversions from non-native inputs.
+When reimporting a written-pitch MusicXML file, MuseScore can choose an enharmonic
+concert-key spelling (for example, C-flat instead of B); the native master retains
+the original independent concert spelling.
 Export a standalone part from MuseScore when an archive includes linked excerpts.
 Open and save older score files in MuseScore 4 before instrument conversion.
 
