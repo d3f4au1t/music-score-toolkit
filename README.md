@@ -121,6 +121,7 @@ signatures do not change the following measure's key. When timing is needed,
 the score must provide a time signature or explicit measure length. Missing or
 malformed rhythms, legacy absolute ticks, cursor moves between staves/voices,
 local meter stretching, measure repeats, and ambiguous tremolos still fail safely.
+Cursor moves inside tuplets or grace groups also remain unsupported.
 Keep MSCZ as the master file: MuseScore 4.7.4's MusicXML exporter was observed to
 omit mid-measure key signatures, even from unmodified input. Native MSCZ/MSCX
 round trips retain those changes; this toolkit does not fix that external exporter.

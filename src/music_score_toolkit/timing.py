@@ -56,7 +56,7 @@ def _fraction(value: str | None, label: str, *, positive: bool = False) -> Fract
 
 def _integer(element: ET.Element, tag: str, default: str | None = None) -> int:
     value = _fraction(_field(element, tag, default), tag)
-    if value.denominator != 1:
+    if value.denominator != 1 or not -(2 ** 31) <= value.numerator < 2 ** 31:
         raise ScoreTimingError(f"{tag} must be an integer.")
     return value.numerator
 
@@ -144,11 +144,15 @@ def read_measure_timing(
               if "len" in measure.attrib else meter)
     if length is None:
         raise ScoreTimingError("Tick-aware key changes require an explicit measure length or time signature.")
+    if "len" in measure.attrib and length < Fraction(1, 128):
+        raise ScoreTimingError("Explicit measure length is shorter than MuseScore's supported minimum.")
     if measure.find("multiMeasureRest") is not None:
         raise ScoreTimingError("Condensed multi-measure rests need expanded music for key timing.")
     voices = measure.findall("voice")
     if not voices:
         raise ScoreTimingError("Tick-aware key changes require modern MuseScore voice containers.")
+    if len(voices) > 4:
+        raise ScoreTimingError("MuseScore supports at most four voices per staff.")
     positions: dict[ET.Element, Fraction] = {}
     for voice in voices:
         cursor = Fraction(0)

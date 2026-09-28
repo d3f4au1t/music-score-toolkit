@@ -94,7 +94,7 @@ def test_incomplete_or_unsupported_timing_is_rejected(body):
         read(f"<voice>{body}</voice>")
 
 
-@pytest.mark.parametrize("length", ["0", "-1/4", "1/0", "bad"])
+@pytest.mark.parametrize("length", ["0", "-1/4", "1/0", "bad", "1/256"])
 def test_invalid_measure_lengths_are_rejected(length):
     with pytest.raises(ScoreTimingError):
         read(f"<voice>{chord()}</voice>", length=length)
@@ -108,3 +108,8 @@ def test_invalid_measure_lengths_are_rejected(length):
 def test_invalid_or_stretched_meters_are_not_guessed(time_signature):
     with pytest.raises(ScoreTimingError):
         read(f"<voice><TimeSig>{time_signature}</TimeSig>{chord()}<KeySig/></voice>")
+
+
+def test_extra_voice_cannot_silently_overflow_into_another_staff():
+    with pytest.raises(ScoreTimingError, match="four voices"):
+        read(f"<voice>{chord()}</voice>" * 5)
