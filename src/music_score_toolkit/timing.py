@@ -191,6 +191,8 @@ def read_measure_timing(
             else:
                 positions[item] = cursor
                 if item.tag == "Chord" and not advances_position(item):
+                    if _integer(item, "staffMove", "0") != 0:
+                        raise ScoreTimingError("Cross-staff grace notes need staff-aware timing support.")
                     pending_grace = True
                 elif advances_position(item):
                     if pending_grace and item.tag != "Chord":

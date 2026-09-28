@@ -336,6 +336,15 @@ def test_key_after_cursor_rewind_to_zero_is_the_opening_key():
     assert len(list(root.iter("KeySig"))) == 1
 
 
+def test_rewound_opening_key_also_applies_to_preceding_serialized_note():
+    xml = score(f"<Measure len='1'><voice>{note(59, 19, 9)}"
+                f"<location><fractions>-1/4</fractions></location>{key(5, -5)}"
+                f"{note(59, 19, 9)}</voice></Measure>")
+    rendered, _ = transpose_mscx(xml, "B", "C")
+    root = ET.fromstring(rendered)
+    assert [n.findtext("tpc2") for n in root.iter("Note")] == ["16", "16"]
+
+
 @pytest.mark.parametrize("operation", ["transpose", "instrument"])
 def test_each_staff_tracks_its_own_modulations(operation):
     root = ET.fromstring(score(f"<Measure>{key(0, 2)}{note()}</Measure>"

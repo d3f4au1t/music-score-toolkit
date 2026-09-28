@@ -1,5 +1,6 @@
 """Opt-in round-trip tests against the installed MuseScore desktop exporter."""
 
+import copy
 import os
 import xml.etree.ElementTree as ET
 from fractions import Fraction
@@ -55,24 +56,53 @@ def native_written_keys(root):
     return keys
 
 
-@pytest.mark.parametrize("layout", ["two_voices", "single_voice"])
+@pytest.mark.parametrize("layout", ["two_voices", "single_voice", "polyphonic", "tuplets"])
 def test_modulating_score_keeps_all_voices_keys_chords_and_markings(tmp_path, layout):
     fixture = Path(__file__).parent / "fixtures" / "modulating-two-voices.musicxml"
-    if layout == "single_voice":
+    if layout != "two_voices":
         # Put the first note of each section into one measure. This exercises
         # actual in-measure modulation serialization, not just synthetic MSCX.
         tree = ET.parse(fixture)
         part = tree.getroot().find("part")
         measures = list(part)
         contents = []
+        bass_notes = []
         for measure in measures:
             first_note = measure.find("note")
+            first_note.find("duration").text = "12"
+            bass_notes.append(copy.deepcopy(measure.findall("note")[-1]))
             contents.extend(child for child in measure if child.tag != "backup"
                             and (child.tag != "note" or child is first_note))
             part.remove(measure)
         measure = ET.SubElement(part, "measure", {"number": "1"})
         measure.extend(contents)
-        fixture = tmp_path / "single-voice.musicxml"
+        measure.find("attributes/divisions").text = "12"
+        if layout in {"polyphonic", "tuplets"}:
+            ET.SubElement(ET.SubElement(measure, "backup"), "duration").text = "48"
+            if layout == "polyphonic":
+                rhythm = [(bass, 12, "quarter") for bass in bass_notes]
+            else:
+                rhythm = [(bass_notes[0], 4, "eighth")] * 3 + [
+                    (bass_notes[1], 18, "quarter"), (bass_notes[2], 6, "eighth"),
+                    (bass_notes[3], 12, "quarter"),
+                ]
+            for index, (bass, duration, kind) in enumerate(rhythm):
+                bass = copy.deepcopy(bass)
+                bass.find("duration").text = str(duration)
+                bass.find("type").text = kind
+                if layout == "tuplets" and index < 3:
+                    modification = ET.SubElement(bass, "time-modification")
+                    ET.SubElement(modification, "actual-notes").text = "3"
+                    ET.SubElement(modification, "normal-notes").text = "2"
+                    ET.SubElement(modification, "normal-type").text = "eighth"
+                    if index in (0, 2):
+                        ET.SubElement(ET.SubElement(bass, "notations"), "tuplet", {
+                            "type": "start" if index == 0 else "stop", "number": "1",
+                        })
+                if layout == "tuplets" and index == 3:
+                    bass.insert(list(bass).index(bass.find("type")) + 1, ET.Element("dot"))
+                measure.append(bass)
+        fixture = tmp_path / f"{layout}.musicxml"
         tree.write(fixture, encoding="utf-8", xml_declaration=True)
     source, bb, raised, restored = [tmp_path / f"{name}.mscz" for name in (
         "source", "bb", "raised", "restored",
@@ -82,7 +112,7 @@ def test_modulating_score_keeps_all_voices_keys_chords_and_markings(tmp_path, la
     convert_score(source, baseline)
     original = ET.parse(baseline).getroot()
     notes = sounding_notes(original)
-    assert len(notes) == (20 if layout == "two_voices" else 4)
+    assert len(notes) == {"two_voices": 20, "single_voice": 4, "polyphonic": 8, "tuplets": 10}[layout]
     retarget_instrument_mscz(source, bb)
     transpose_mscz(bb, raised, "C", "D")
     retarget_instrument_mscz(bb, restored, "C")
@@ -99,7 +129,7 @@ def test_modulating_score_keeps_all_voices_keys_chords_and_markings(tmp_path, la
         convert_score(score, native)
         assert native_written_keys(ET.parse(native).getroot()) == keys
         exported_keys = [int(k.text) for k in root.findall(".//attributes/key/fifths")]
-        if layout == "single_voice":
+        if layout != "two_voices":
             # MuseScore 4.7.4 omits interior keys in MusicXML even for the
             # unmodified input. Native reload above must preserve every key;
             # don't mistake this exporter limitation for lost MSCZ content.

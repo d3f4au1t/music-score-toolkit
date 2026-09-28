@@ -889,7 +889,9 @@ def _staff_key_regions(
             items = list(streams[0])
             trailing_key = not any(_advances_key_position(item)
                                    for item in items[items.index(interior_keys[-1]) + 1:])
-        if (cursor_moves and changing_keys) or (interior_keys and len(streams) > 1) or trailing_key:
+        if (cursor_moves and (changing_keys or interior_keys)) or (
+            interior_keys and len(streams) > 1
+        ) or trailing_key:
             timed_regions, current = _timed_key_regions(
                 scope, measure, meters, current, concert_pitch,
             )
