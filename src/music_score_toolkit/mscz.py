@@ -13,9 +13,10 @@ import xml.etree.ElementTree as ET
 import zipfile
 import zlib
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import TypeVar
 
 from .keys import (
     KEY_SIGNATURES,
@@ -1785,16 +1786,17 @@ def _validate_mscz_manifest(
         raise ScoreFormatError("MSCZ container manifest does not reference an MSCX score.")
 
 
-def transpose_mscz(
+_ReportT = TypeVar("_ReportT")
+
+
+def _rewrite_mscz(
     input_path: str | Path,
     output_path: str | Path,
-    from_key: str,
-    to_key: str,
+    transform: Callable[[bytes, bool | None], tuple[bytes, _ReportT]],
     *,
-    strict_pitch_range: bool = True,
-    validate_source_key: bool = True,
-) -> TransposeReport:
-    """Transpose every MSCX score entry inside an MSCZ archive atomically."""
+    single_score: bool = False,
+) -> list[_ReportT]:
+    """Apply a score transformation using the shared validated, atomic archive path."""
 
     source = Path(input_path).expanduser().resolve()
     destination = Path(output_path).expanduser().resolve()
@@ -1805,10 +1807,8 @@ def transpose_mscz(
         (destination if destination.exists() else source).stat().st_mode
     )
 
-    note_count = 0
-    signature_count = 0
+    reports: list[_ReportT] = []
     score_count = 0
-    harmony_count = 0
     temp_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -1843,6 +1843,11 @@ def transpose_mscz(
                     raise ScoreFormatError(
                         "MSCZ archive does not contain an .mscx score entry."
                     )
+                if single_score and len(score_entries) != 1:
+                    raise ScoreFormatError(
+                        "Instrument conversion requires a score without linked excerpts; "
+                        "export the desired part as a standalone MSCZ first."
+                    )
                 _validate_mscz_manifest(source_zip, members)
                 concert_pitch = _archive_concert_pitch_setting(source_zip, infos)
                 score_names = {info.filename for info in score_entries}
@@ -1858,19 +1863,10 @@ def transpose_mscz(
                             info,
                             maximum_size=_MAX_SCORE_XML_SIZE,
                         )
-                        payload, report = transpose_mscx(
-                            payload,
-                            from_key,
-                            to_key,
-                            strict_pitch_range=strict_pitch_range,
-                            concert_pitch=concert_pitch,
-                            validate_source_key=validate_source_key,
-                        )
-                        note_count += report.notes_changed
-                        signature_count += report.key_signatures_changed
-                        score_count += report.score_entries_changed
-                        harmony_count += report.chord_symbols_changed
-                        target_zip.writestr(info, payload)
+                        updated, report = transform(payload, concert_pitch)
+                        score_count += updated != payload
+                        reports.append(report)
+                        target_zip.writestr(info, updated)
 
             if _file_snapshot(os.fstat(source_handle.fileno())) != initial_snapshot:
                 raise ScoreFormatError(
@@ -1899,12 +1895,36 @@ def transpose_mscz(
                 # Best-effort cleanup must not hide the score-processing error.
                 pass
 
+    return reports
+
+
+def transpose_mscz(
+    input_path: str | Path,
+    output_path: str | Path,
+    from_key: str,
+    to_key: str,
+    *,
+    strict_pitch_range: bool = True,
+    validate_source_key: bool = True,
+) -> TransposeReport:
+    """Transpose every MSCX score entry inside an MSCZ archive atomically."""
+
+    reports = _rewrite_mscz(
+        input_path,
+        output_path,
+        lambda payload, concert_pitch: transpose_mscx(
+            payload, from_key, to_key,
+            strict_pitch_range=strict_pitch_range,
+            concert_pitch=concert_pitch,
+            validate_source_key=validate_source_key,
+        ),
+    )
     return TransposeReport(
         from_key=normalize_conventional_key(from_key),
         to_key=normalize_conventional_key(to_key),
         semitone_shift=calculate_shift(from_key, to_key),
-        notes_changed=note_count,
-        key_signatures_changed=signature_count,
-        score_entries_changed=score_count,
-        chord_symbols_changed=harmony_count,
+        notes_changed=sum(report.notes_changed for report in reports),
+        key_signatures_changed=sum(report.key_signatures_changed for report in reports),
+        score_entries_changed=sum(report.score_entries_changed for report in reports),
+        chord_symbols_changed=sum(report.chord_symbols_changed for report in reports),
     )
