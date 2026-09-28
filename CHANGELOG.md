@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Resolve multi-voice mid-measure key changes using exact rhythmic positions,
+  including dotted durations, nested tuplets, grace notes, pickups, and relative
+  cursor moves. Distinguish end-of-measure courtesy signatures from real changes.
+  Add native MuseScore round trips for polyphonic and triplet/dotted modulations.
 - Support local key changes during instrument conversion and transposition,
   including multi-voice measure boundaries and sequential single-voice changes.
   Keep concert/written notes and chord symbols aligned with enharmonic key

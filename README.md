@@ -113,10 +113,14 @@ lists the available choices in an error. Multi-part input must already be in
 written-pitch view; the other parts are preserved. The command currently
 requires MuseScore 4 format, a score without linked excerpts, and a selected part without
 mid-score instrument changes, custom or atonal keys, percussion, TAB, or fret diagrams.
-Key changes are supported at measure boundaries across all voices, and inside a
-single voice. Notes and chord symbols use each section's own key spelling.
-Changing-key staves with explicit timing/cursor moves, multi-voice changes inside
-a measure, and ambiguous trailing courtesy signatures still fail safely.
+Key changes are supported between and inside measures, including multiple
+voices. Exact timing handles dotted rhythms, modern nested tuplets, grace
+notes, full-measure rests, pickups, and relative cursor moves within a measure.
+Notes and chord symbols use the key at their own onset; end-of-measure courtesy
+signatures do not change the following measure's key. When timing is needed,
+the score must provide a time signature or explicit measure length. Missing or
+malformed rhythms, legacy absolute ticks, cursor moves between staves/voices,
+local meter stretching, measure repeats, and ambiguous tremolos still fail safely.
 Keep MSCZ as the master file: MuseScore 4.7.4's MusicXML exporter was observed to
 omit mid-measure key signatures, even from unmodified input. Native MSCZ/MSCX
 round trips retain those changes; this toolkit does not fix that external exporter.
@@ -212,8 +216,9 @@ pytest
 
 Tests include generated XML cases and both MSCZ files from the source
 repositories. External desktop applications are isolated from unit tests. To
-also verify barline and mid-measure modulations, multiple voices, instrument
-conversion, sounding pitches, and score markings using an installed MuseScore 4 exporter:
+also verify barline and polyphonic mid-measure modulations, triplets, dotted
+rhythms, written spelling, instrument conversion, sounding pitches, and score
+markings using an installed MuseScore 4 exporter:
 
 ```bash
 MUSIC_SCORE_MUSESCORE_TESTS=1 pytest tests/test_musescore_integration.py

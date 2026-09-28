@@ -156,6 +156,11 @@ def read_measure_timing(
         tuplets: list[tuple[Fraction, Fraction, Fraction]] = []
         pending_grace = False
         for item in voice:
+            if item.tag in {"Chord", "Rest", "Note", "Harmony", "KeySig"} and (
+                item.find("track") is not None
+                or any(note.find("track") is not None for note in item.findall("Note"))
+            ):
+                raise ScoreTimingError("Explicit event track routing is unsupported for key timing.")
             if item.tag == "tick":
                 raise ScoreTimingError("Absolute legacy ticks are unsupported; re-save in MuseScore 4.")
             if item.tag == "location":

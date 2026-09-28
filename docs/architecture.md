@@ -15,6 +15,8 @@
 - `instruments.py` changes a selected part's instrument transposition and
   written notation while preserving sounding pitches; it shares the validated,
   atomic archive-rewrite path with key transposition.
+- `timing.py` resolves modern voice events into exact, measure-local rhythmic
+  positions without modifying or repairing the score's rhythm.
 - `tools.py` discovers MuseScore/SmartScore and runs MuseScore conversion.
 - `workflows.py` coordinates the manual SmartScore export loop, including
   stable-file detection and MusicXML/MXL container validation.
@@ -47,11 +49,19 @@ harmonies at that onset share the new key. Instrument conversion uses the same
 regions while preserving sounding pitches. Key definitions are rewritten only
 after all source note/harmony contexts have been read.
 
-This is deliberately not a full MuseScore tick evaluator. Changing-key staves
-with explicit cursor moves, multi-voice mid-measure changes, and trailing keys
-that might be courtesy announcements fail closed when local respelling is
-needed. A uniform transposition that requires no key-dependent respelling can
-still use one interval across those notes. The ordering rules follow MuseScore's
+For polyphonic interior changes, relative cursor moves, or trailing keys,
+`timing.py` uses rational whole-note positions shared across voices. It reads
+explicit/inherited time signatures and pickup lengths, dotted durations,
+modern nested tuplet ratios, and full-measure rests. Grace chords consume no
+time. Simultaneous key conflicts and invalid/out-of-measure positions fail
+closed. End-of-measure courtesy keys are transposed but excluded from the key
+map; a real change before the end still carries into later measures.
+
+This remains a bounded timing reader, not a full MuseScore engraving engine.
+Legacy absolute ticks, cross-staff/voice cursor moves, local meter stretching,
+measure repeats, ambiguous tremolos, and incomplete rhythmic metadata fail
+closed when key-dependent timing is required. Simple ordered changes continue
+to work without demanding a complete rhythmic map. The rules follow MuseScore's
 [measure reader](https://github.com/musescore/MuseScore/blob/v4.7.4/src/engraving/rw/read400/measurerw.cpp):
 voices restart at the measure tick, grace chords do not advance it, and keys at
 the measure's end are courtesy announcements rather than key-map changes.

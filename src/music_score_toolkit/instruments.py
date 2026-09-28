@@ -74,9 +74,9 @@ def retarget_instrument_mscx(
     ``part`` is one-based and required for multi-part scores. This changes the
     transposition and part labels, not the playback sound or clef. Linked
     excerpts and instrument changes require a standalone part prepared in
-    MuseScore. Key changes are supported at measure boundaries across voices,
-    and within a single voice. Changing-key staves with explicit cursor moves
-    or ambiguous trailing courtesy signatures need tick-aware processing.
+    MuseScore. Key changes within and between measures are resolved across
+    voices using explicit rhythmic timing when needed. Unsupported timing
+    constructs fail closed instead of assigning notes to the wrong key.
     """
 
     target = normalize_key(to_instrument)

@@ -345,6 +345,41 @@ def test_rewound_opening_key_also_applies_to_preceding_serialized_note():
     assert [n.findtext("tpc2") for n in root.iter("Note")] == ["16", "16"]
 
 
+def test_trailing_real_key_before_measure_end_does_change_following_measure():
+    xml = score(f"<Measure len='1'><voice>{key(0, 2)}{note()}{key(5, -5)}</voice></Measure>"
+                f"<Measure><voice>{note(59, 19, 9)}</voice></Measure>")
+    rendered, _ = transpose_mscx(xml, "C", "D")
+    root = ET.fromstring(rendered)
+    assert [n.findtext("tpc2") for n in root.iter("Note")] == ["18", "11"]
+
+
+def test_mid_measure_key_in_later_voice_applies_to_earlier_serialized_voice():
+    xml = score(f"<Measure len='1'><voice>{key(0, 2)}{note(59, 19, 21)}{note(59, 19, 9)}"
+                f"</voice><voice>{note()}{key(5, -5)}{note(59, 19, 9)}</voice></Measure>")
+    rendered, _ = transpose_mscx(xml, "C", "D")
+    root = ET.fromstring(rendered)
+    assert [n.findtext("tpc2") for n in root.findall(".//Measure/voice")[0].iter("Note")] == ["23", "11"]
+
+
+def test_conflicting_interior_keys_at_same_beat_fail_closed():
+    xml = score(f"<Measure len='1'><voice>{key(0, 2)}{note()}{key(5, -5)}{note(59, 19, 9)}"
+                f"</voice><voice>{note()}{key(3, 5)}{note(69, 17, 19)}</voice></Measure>")
+    with pytest.raises(ScoreFormatError, match="Conflicting key signatures at the same musical time"):
+        transpose_mscx(xml, "C", "D")
+
+
+def test_time_signature_carries_to_later_polyphonic_modulation():
+    xml = score("<Measure><voice><TimeSig><sigN>3</sigN><sigD>4</sigD></TimeSig>"
+                f"{key(0, 2)}{note()}</voice></Measure>"
+                f"<Measure><voice>{note()}{key(5, -5)}{note(59, 19, 9)}</voice>"
+                f"<voice>{note(59, 19, 21)}{note(59, 19, 9)}</voice></Measure>")
+    rendered, _ = transpose_mscx(xml, "C", "D")
+    root = ET.fromstring(rendered)
+    assert [n.findtext("tpc2") for n in root.findall(".//Measure")[1].iter("Note")] == [
+        "18", "11", "23", "11",
+    ]
+
+
 @pytest.mark.parametrize("operation", ["transpose", "instrument"])
 def test_each_staff_tracks_its_own_modulations(operation):
     root = ET.fromstring(score(f"<Measure>{key(0, 2)}{note()}</Measure>"

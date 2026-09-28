@@ -127,7 +127,17 @@ def test_modulating_score_keeps_all_voices_keys_chords_and_markings(tmp_path, la
         assert sounding_notes(root) == [(m, v, d, pitch + shift) for m, v, d, pitch in notes]
         native = score.with_name(f"{score.stem}-reopened.mscx")
         convert_score(score, native)
-        assert native_written_keys(ET.parse(native).getroot()) == keys
+        native_root = ET.parse(native).getroot()
+        assert native_written_keys(native_root) == keys
+        # Every note of the last voice is a local tonic in this fixture. Verify
+        # its actual spelling, not only sounding pitch and printed signatures.
+        spelled = [int(note.findtext("tpc2", note.findtext("tpc")))
+                   for measure in native_root.findall("Score/Staff/Measure")
+                   for note in measure.findall("voice")[-1].iter("Note")]
+        expected_spelling = [14 + value for value in keys]
+        if layout == "tuplets":
+            expected_spelling = expected_spelling[:1] * 3 + expected_spelling[1:]
+        assert spelled == expected_spelling
         exported_keys = [int(k.text) for k in root.findall(".//attributes/key/fifths")]
         if layout != "two_voices":
             # MuseScore 4.7.4 omits interior keys in MusicXML even for the

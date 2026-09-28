@@ -86,6 +86,8 @@ def test_relative_cursor_repositions_without_changing_stored_rhythm():
     tuplet() + "<location><fractions>1/4</fractions></location><endTuplet/>",
     tuplet(actual=0) + chord('eighth') * 3 + "<endTuplet/>",
     chord("whole") * 2, chord("eighth", "<acciaccatura/>"),
+    chord("quarter", "<track>4</track>"),
+    chord("eighth", "<acciaccatura/><staffMove>1</staffMove>"),
 ])
 def test_incomplete_or_unsupported_timing_is_rejected(body):
     with pytest.raises(ScoreTimingError):
@@ -96,3 +98,13 @@ def test_incomplete_or_unsupported_timing_is_rejected(body):
 def test_invalid_measure_lengths_are_rejected(length):
     with pytest.raises(ScoreTimingError):
         read(f"<voice>{chord()}</voice>", length=length)
+
+
+@pytest.mark.parametrize("time_signature", [
+    "<sigN>4</sigN><sigD>0</sigD>",
+    "<sigN>4</sigN><sigD>4</sigD><stretchN>2</stretchN><stretchD>1</stretchD>",
+    "<sigN>4</sigN><sigN>3</sigN><sigD>4</sigD>",
+])
+def test_invalid_or_stretched_meters_are_not_guessed(time_signature):
+    with pytest.raises(ScoreTimingError):
+        read(f"<voice><TimeSig>{time_signature}</TimeSig>{chord()}<KeySig/></voice>")
