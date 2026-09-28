@@ -23,6 +23,8 @@ and regression tests against both original MSCZ samples.
 ## Features
 
 - Transpose every `.mscx` entry inside a MuseScore `.mscz` archive.
+- Rewrite a selected part for C, B-flat, A, F, or E-flat instrument pitch
+  while preserving its sounding pitches and updating written notation.
 - Update MIDI pitch, concert and written MuseScore TPC spelling, and both
   MuseScore 4 and legacy conventional key signatures while preserving key
   changes and source-note enharmonic intent.
@@ -89,13 +91,32 @@ matches `--from-key` so a typo cannot silently transpose by the wrong interval.
 For an intentionally ambiguous or partial score, that check can be bypassed
 with `--ignore-source-key`.
 
-To rewrite concert-C music one whole step higher for a B-flat instrument,
-transpose from C to D:
+To prepare concert-C music for a B-flat instrument while keeping its original
+sounding pitch, use the instrument conversion command:
 
 ```bash
-music-score transpose concert-c.mscz b-flat-part.mscz \
-  --from-key C --to-key D
+music-score instrument concert-c.mscz b-flat-part.mscz \
+  --to-instrument Bb --part-name "B-flat part" --export-pdf b-flat-part.pdf
 ```
+
+The output is displayed in written pitch: a sounding C becomes a written D,
+and concert C major gets a written D-major signature. Playback stays at the
+original pitch. Instrument conversion also updates written chord symbols,
+accidentals, and the instrument's transposition settings. The existing playback
+sound and clef are retained; this command sets instrument **pitch**, not a new
+sound-library instrument. Supported pitches are C, Bb (the default), A, F, and
+Eb, with sounding intervals of 0, -2, -3, -7, and -9 semitones respectively.
+Octave-transposing variants such as bass clarinet are not separate presets yet.
+
+For a multi-part score, add `--part 2` (part numbers start at 1). Omitting it
+lists the available choices in an error. Multi-part input must already be in
+written-pitch view; the other parts are preserved. The command currently
+requires a score without linked excerpts and a selected part without mid-score
+key/instrument changes, custom or atonal keys, percussion, TAB, or fret diagrams.
+Export a standalone part from MuseScore when an archive includes linked excerpts.
+
+Use `transpose --from-key C --to-key D` when you actually want to raise the
+music's sounding pitch by a whole step instead.
 
 Convert MusicXML to PDF or MSCZ:
 
@@ -134,7 +155,7 @@ export MUSESCORE_PATH="/Applications/MuseScore 4.app/Contents/MacOS/mscore"
 ## Python API
 
 ```python
-from music_score_toolkit import transpose_mscz
+from music_score_toolkit import retarget_instrument_mscz, transpose_mscz
 
 report = transpose_mscz(
     "input.mscz",
@@ -143,6 +164,9 @@ report = transpose_mscz(
     to_key="C",
 )
 print(report.notes_changed)
+
+# Prepare a B-flat part without raising playback pitch.
+retarget_instrument_mscz("concert-part.mscz", "bb-part.mscz", "Bb")
 ```
 
 ## Reliability boundaries

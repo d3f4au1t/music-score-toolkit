@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `music-score instrument` for preparing C/B-flat/A/F/E-flat parts without
+  changing sounding pitches, including part selection, written notes and chord
+  symbols, key signatures, accidental metadata, and optional PDF export.
 - Make transposition staff-aware: preserve percussion, add implicit initial
   key signatures, transpose chord symbols, and recompute concert/written TPC
   spelling for transposing instruments.

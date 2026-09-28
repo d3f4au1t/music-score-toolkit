@@ -12,6 +12,9 @@
 - `keys.py` normalizes major keys and contains semitone, key-signature, and
   MuseScore TPC mappings.
 - `mscz.py` performs XML transformation and atomic MSCZ repacking.
+- `instruments.py` changes a selected part's instrument transposition and
+  written notation while preserving sounding pitches; it shares the validated,
+  atomic archive-rewrite path with key transposition.
 - `tools.py` discovers MuseScore/SmartScore and runs MuseScore conversion.
 - `workflows.py` coordinates the manual SmartScore export loop, including
   stable-file detection and MusicXML/MXL container validation.
