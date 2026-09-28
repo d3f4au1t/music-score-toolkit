@@ -674,6 +674,85 @@ def test_b_flat_staff_recomputes_enharmonic_written_notes_and_harmony():
     assert report.chord_symbols_changed == 1
 
 
+@pytest.mark.parametrize(
+    ("diatonic", "chromatic", "target", "concert_key", "written_key", "written_scale"),
+    [
+        (-1, -2, "C#", 7, -3, [11, 13, 15, 10, 12, 14, 16]),  # B-flat: E-flat
+        (-4, -7, "C#", 7, -4, [10, 12, 14, 9, 11, 13, 15]),  # F: A-flat
+        (-5, -9, "F#", 6, -3, [11, 13, 15, 10, 12, 14, 16]),  # E-flat: E-flat
+        (-2, -3, "Cb", -7, 2, [16, 18, 20, 15, 17, 19, 21]),  # A: D
+    ],
+)
+@pytest.mark.parametrize("concert_pitch", [False, True])
+@pytest.mark.parametrize("include_written_tpc", [False, True])
+def test_written_scale_matches_folded_key_signature(
+    diatonic: int,
+    chromatic: int,
+    target: str,
+    concert_key: int,
+    written_key: int,
+    written_scale: list[int],
+    concert_pitch: bool,
+    include_written_tpc: bool,
+):
+    instrument_shift = chromatic * 7 - diatonic * 12
+    pitches = [60, 62, 64, 65, 67, 69, 71]
+    concert_tpcs = [14, 16, 18, 13, 15, 17, 19]
+    notes = "".join(
+        f"<Chord><Note><pitch>{pitch}</pitch><tpc>{tpc}</tpc>"
+        + (f"<tpc2>{tpc - instrument_shift}</tpc2>" if include_written_tpc else "")
+        + "</Note></Chord>"
+        for pitch, tpc in zip(pitches, concert_tpcs, strict=True)
+    )
+    harmony_root = 14 if concert_pitch else 14 - instrument_shift
+    xml = f"""<museScore><Score>
+      <Style><concertPitch>{int(concert_pitch)}</concertPitch></Style>
+      <Part><Staff id="1"/><Instrument>
+        <transposeDiatonic>{diatonic}</transposeDiatonic>
+        <transposeChromatic>{chromatic}</transposeChromatic>
+      </Instrument></Part>
+      <Staff id="1"><Measure><voice>
+        <KeySig><concertKey>0</concertKey><actualKey>{-instrument_shift}</actualKey></KeySig>
+        <Harmony><root>{harmony_root}</root><name/></Harmony>{notes}
+      </voice></Measure></Staff>
+    </Score></museScore>"""
+
+    rendered, report = transpose_mscx(xml, "C", target)
+    root = ET.fromstring(rendered)
+
+    assert int(root.findtext(".//KeySig/concertKey")) == concert_key
+    assert int(root.findtext(".//KeySig/actualKey")) == written_key
+    assert [int(note.findtext("tpc2")) for note in root.iter("Note")] == written_scale
+    assert [int(note.findtext("tpc")) for note in root.iter("Note")] == [
+        value + concert_key for value in concert_tpcs
+    ]
+    assert [int(note.findtext("pitch")) for note in root.iter("Note")] == [
+        pitch + report.semitone_shift for pitch in pitches
+    ]
+    assert int(root.findtext(".//Harmony/root")) == (
+        14 + concert_key if concert_pitch else written_scale[0]
+    )
+
+
+def test_written_interval_is_respelled_once_for_double_accidentals():
+    xml = b"""<museScore><Score>
+      <Part><Staff id="1"/><Instrument>
+        <transposeDiatonic>-1</transposeDiatonic><transposeChromatic>-2</transposeChromatic>
+      </Instrument></Part>
+      <Staff id="1"><Measure><KeySig><concertKey>6</concertKey><actualKey>-4</actualKey>
+        </KeySig><Note><pitch>71</pitch><tpc>31</tpc><tpc2>9</tpc2></Note>
+      </Measure></Staff>
+    </Score></museScore>"""
+
+    rendered, _ = transpose_mscx(xml, "F#", "C#")
+    root = ET.fromstring(rendered)
+
+    # Concert A-double-sharp becomes E-double-sharp, written G-sharp in E-flat major.
+    # An intermediate written F-triple-sharp must not trigger an extra respelling.
+    assert root.findtext(".//Note/tpc") == "32"
+    assert root.findtext(".//Note/tpc2") == "22"
+
+
 def test_actual_key_is_recomputed_from_raw_instrument_not_old_enharmonic_relation():
     xml = b"""<museScore><Score>
       <Part><Staff id="1"><StaffType group="pitched"/></Staff><Instrument>

@@ -937,11 +937,9 @@ def _transpose_note(
     new_tpc2 = None
     if old_tpc2 is not None:
         if has_instrument_transposition:
-            recomputed = transpose_tpc(new_tpc, -instrument_tpc_shift)
-            new_tpc2 = (
-                transpose_tpc(recomputed, written_tpc_adjustment)
-                if written_tpc_adjustment
-                else recomputed
+            new_tpc2 = transpose_tpc(
+                new_tpc,
+                -instrument_tpc_shift + written_tpc_adjustment,
             )
         elif was_clipped:
             written_pitch_class = tpc_pitch_class(old_tpc2) + (updated - current)
@@ -953,11 +951,9 @@ def _transpose_note(
             tpc2.text = str(new_tpc2)
             changed = True
     elif has_instrument_transposition:
-        recomputed = transpose_tpc(new_tpc, -instrument_tpc_shift)
-        new_tpc2 = (
-            transpose_tpc(recomputed, written_tpc_adjustment)
-            if written_tpc_adjustment
-            else recomputed
+        new_tpc2 = transpose_tpc(
+            new_tpc,
+            -instrument_tpc_shift + written_tpc_adjustment,
         )
         tpc2 = ET.Element("tpc2")
         tpc2.text = str(new_tpc2)
@@ -989,12 +985,16 @@ def _written_tpc_adjustment(
     if opening.signature is None:
         return 0
     target_concert = transpose_key_signature_by_tpc(opening.signature, tpc_shift)
+    # Compare with the unfurled instrument interval. The key helper already
+    # folds theoretical signatures into -7..7; comparing only its result with
+    # the preference-normalized key would lose that first enharmonic change.
+    raw_written = target_concert - instrument_shift
     named_written = transpose_key_signature_by_tpc(target_concert, -instrument_shift)
     normalized_written = _normalize_written_signature(
         named_written,
         _effective_key_preference(scope),
     )
-    return normalized_written - named_written
+    return normalized_written - raw_written
 
 
 def _key_signature_folds_enharmonically(
