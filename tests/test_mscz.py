@@ -1301,7 +1301,7 @@ def test_fails_closed_for_fretted_notes_even_outside_tablature(xml: bytes):
         transpose_mscx(xml, "C", "D")
 
 
-def test_fails_closed_for_transposing_staff_harmony_after_key_change():
+def test_transposing_staff_harmony_uses_local_key_after_change():
     xml = b"""<museScore><Score>
       <Part><Staff id="1"><StaffType group="pitched"/></Staff><Instrument>
         <transposeDiatonic>-1</transposeDiatonic><transposeChromatic>-2</transposeChromatic>
@@ -1313,11 +1313,14 @@ def test_fails_closed_for_transposing_staff_harmony_after_key_change():
       </Staff>
     </Score></museScore>"""
 
-    with pytest.raises(ScoreFormatError, match="tick-aware"):
-        transpose_mscx(xml, "C", "D")
+    rendered, report = transpose_mscx(xml, "C", "D")
+    root = ET.fromstring(rendered)
+    assert root.findtext(".//Harmony/root") == "11"  # E-flat, not D-double-sharp.
+    assert [k.findtext("actualKey") for k in root.iter("KeySig")] == ["4", "-3"]
+    assert report.chord_symbols_changed == 1
 
 
-def test_fails_closed_for_transposing_staff_with_implicit_opening_key_change():
+def test_transposing_staff_implicit_opening_and_later_keys_have_separate_spelling():
     xml = b"""<museScore><Score>
       <Part><Staff id="1"><StaffType group="pitched"/></Staff><Instrument>
         <transposeDiatonic>-1</transposeDiatonic><transposeChromatic>-2</transposeChromatic>
@@ -1329,11 +1332,15 @@ def test_fails_closed_for_transposing_staff_with_implicit_opening_key_change():
       </Staff>
     </Score></museScore>"""
 
-    with pytest.raises(ScoreFormatError, match="tick-aware"):
-        transpose_mscx(xml, "C", "D")
+    rendered, report = transpose_mscx(xml, "C", "D")
+    root = ET.fromstring(rendered)
+    assert [n.findtext("tpc2") for n in root.iter("Note")] == ["18", "13"]
+    assert [n.findtext("pitch") for n in root.iter("Note")] == ["62", "63"]
+    assert [k.findtext("actualKey") for k in root.iter("KeySig")] == ["4", "-5"]
+    assert report.key_signatures_changed == 2
 
 
-def test_fails_closed_when_key_change_needs_enharmonic_note_respelling():
+def test_notes_follow_local_key_when_modulation_crosses_enharmonic_boundary():
     xml = b"""<museScore><Score><Staff>
       <Measure><KeySig><concertKey>0</concertKey></KeySig>
         <Note><pitch>60</pitch><tpc>14</tpc></Note></Measure>
@@ -1341,8 +1348,10 @@ def test_fails_closed_when_key_change_needs_enharmonic_note_respelling():
         <Note><pitch>61</pitch><tpc>21</tpc></Note></Measure>
     </Staff></Score></museScore>"""
 
-    with pytest.raises(ScoreFormatError, match="enharmonic-signature boundary"):
-        transpose_mscx(xml, "C", "D")
+    rendered, _ = transpose_mscx(xml, "C", "D")
+    root = ET.fromstring(rendered)
+    assert [n.findtext("tpc") for n in root.iter("Note")] == ["16", "11"]
+    assert [k.findtext("concertKey") for k in root.iter("KeySig")] == ["2", "-3"]
 
 
 def test_embedded_score_staff_ids_are_resolved_in_their_own_context():

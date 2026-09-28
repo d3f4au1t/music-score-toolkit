@@ -10,18 +10,20 @@ from .keys import normalize_key, transpose_key_signature_by_tpc, transpose_tpc
 from .mscz import (
     ScoreFormatError,
     _bounded_elements,
+    _display_key,
     _encode_xml_text,
     _instrument_interval,
     _instrument_tpc_shift,
+    _key_context,
     _key_signature_kind,
     _normalize_written_signature,
     _opening_key,
     _parse_mscx,
-    _read_integer_field,
     _read_tpc,
     _render_mscx,
     _rewrite_mscz,
     _score_contexts,
+    _staff_key_regions,
     _staff_scopes,
     _transpose_accidental_subtype,
     _transpose_harmony,
@@ -71,8 +73,9 @@ def retarget_instrument_mscx(
 
     ``part`` is one-based and required for multi-part scores. This changes the
     transposition and part labels, not the playback sound or clef. Linked
-    excerpts and changes of key/instrument within the selected part currently
-    require a standalone part prepared in MuseScore.
+    excerpts and instrument changes require a standalone part prepared in
+    MuseScore. Key changes are supported at measure boundaries across voices,
+    and within a single voice without explicit cursor movements.
     """
 
     target = normalize_key(to_instrument)
@@ -141,50 +144,48 @@ def retarget_instrument_mscx(
             raise ScoreFormatError("Instrument conversion cannot safely refret tablature.")
         opening = _opening_key(scope, source_concert_pitch)
         signatures = _bounded_elements(scope.content, "KeySig")
-        if any(key is not opening.key_signature for key in signatures):
-            raise ScoreFormatError("Instrument conversion does not yet support mid-score key changes.")
         if any(_key_signature_kind(key) != "conventional" for key in signatures):
             raise ScoreFormatError("Instrument conversion requires conventional key signatures.")
-        concert_key = opening.signature if opening.signature is not None else 0
         preference = scope.key_preference
-        destination_key = _written_key(concert_key, new_tpc_interval, preference)
-        source_display_key = concert_key
-        if not source_concert_pitch:
-            source_display_key = None
-            if opening.key_signature is not None:
-                for field in ("actualKey", "accidental"):
-                    source_display_key = _read_integer_field(opening.key_signature, field)
-                    if source_display_key is not None:
-                        break
-            if source_display_key is None:
-                source_display_key = _written_key(concert_key, old_tpc_interval, preference)
-        for note in notes:
-            original_note = ET.tostring(note)
-            _transpose_note(
-                note, 0, 0, "sharp", strict_pitch_range=True,
-                concert_pitch=source_concert_pitch,
-                instrument_tpc_shift=old_tpc_interval,
-                has_instrument_transposition=old_interval != (0, 0),
-            )
-            _, concert_tpc = _read_tpc(note, "tpc")
-            _, source_written_tpc = _read_tpc(note, "tpc2")
-            assert concert_tpc is not None
-            source_display_tpc = concert_tpc
-            if not source_concert_pitch:
-                source_display_tpc = (
-                    source_written_tpc if source_written_tpc is not None
-                    else transpose_tpc(concert_tpc, source_display_key - concert_key)
+        for region in _staff_key_regions(scope, source_concert_pitch):
+            concert_key = region.key.signature
+            assert concert_key is not None
+            destination_key = _written_key(concert_key, new_tpc_interval, preference)
+            source_display_key = _display_key(scope, region.key, source_concert_pitch)
+            assert source_display_key is not None
+            for element in region.elements:
+                if element.tag == "Harmony":
+                    harmony_count += _transpose_harmony(
+                        element, destination_key - source_display_key,
+                    )
+                    continue
+                note = element
+                original_note = ET.tostring(note)
+                _transpose_note(
+                    note, 0, 0, "sharp", strict_pitch_range=True,
+                    concert_pitch=source_concert_pitch,
+                    instrument_tpc_shift=old_tpc_interval,
+                    has_instrument_transposition=old_interval != (0, 0),
                 )
-            destination_tpc = transpose_tpc(concert_tpc, destination_key - concert_key)
-            _set_text(note, "tpc2", str(destination_tpc))
-            _transpose_accidental_subtype(
-                note, source_display_tpc, destination_tpc, None, None, True,
-            )
-            note_count += ET.tostring(note) != original_note
-        for harmony in _bounded_elements(scope.content, "Harmony"):
-            harmony_count += _transpose_harmony(harmony, destination_key - source_display_key)
-        if opening.key_signature is not None:
-            key = opening.key_signature
+                _, concert_tpc = _read_tpc(note, "tpc")
+                _, source_written_tpc = _read_tpc(note, "tpc2")
+                assert concert_tpc is not None
+                source_display_tpc = concert_tpc
+                if not source_concert_pitch:
+                    source_display_tpc = (
+                        source_written_tpc if source_written_tpc is not None
+                        else transpose_tpc(concert_tpc, source_display_key - concert_key)
+                    )
+                destination_tpc = transpose_tpc(concert_tpc, destination_key - concert_key)
+                _set_text(note, "tpc2", str(destination_tpc))
+                _transpose_accidental_subtype(
+                    note, source_display_tpc, destination_tpc, None, None, True,
+                )
+                note_count += ET.tostring(note) != original_note
+        for key in signatures:
+            concert_key = _key_context(scope, key, source_concert_pitch).signature
+            assert concert_key is not None
+            destination_key = _written_key(concert_key, new_tpc_interval, preference)
             original_key = ET.tostring(key)
             # Validate old key fields before translating legacy notation to the
             # modern concert/written pair. Keep courtesy/layout/identity fields.
@@ -194,7 +195,9 @@ def retarget_instrument_mscx(
             _set_text(key, "concertKey", str(concert_key))
             _set_text(key, "actualKey", str(destination_key))
             key_count += ET.tostring(key) != original_key
-        elif opening.has_measure:
+        if opening.key_signature is None and opening.has_measure:
+            concert_key = 0
+            destination_key = _written_key(concert_key, new_tpc_interval, preference)
             measure = next(child for child in scope.content if child.tag == "Measure")
             parent = measure.find("voice")
             if parent is None:

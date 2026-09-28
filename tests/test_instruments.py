@@ -183,8 +183,7 @@ def test_invalid_part_selection_is_rejected(part):
 
 
 @pytest.mark.parametrize(
-    "extra", ["<InstrumentChange/>", "<StaffTypeChange/>", "<FretDiagram/>",
-              "<KeySig><concertKey>2</concertKey></KeySig>"],
+    "extra", ["<InstrumentChange/>", "<StaffTypeChange/>", "<FretDiagram/>"],
 )
 def test_unsupported_context_changes_fail_closed(extra):
     xml = CONCERT_C.replace(b"</voice>", extra.encode() + b"</voice>")

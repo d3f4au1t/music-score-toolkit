@@ -68,6 +68,12 @@ class _OpeningKey:
 
 
 @dataclass(frozen=True, slots=True)
+class _KeyRegion:
+    key: _OpeningKey
+    elements: tuple[ET.Element, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _MscxDocument:
     root: ET.Element
     prolog: tuple[ET.Element, ...]
@@ -739,12 +745,14 @@ def _first_measure(staff: ET.Element) -> ET.Element | None:
 
 
 def _opening_key_signature(measure: ET.Element) -> ET.Element | None:
-    music_has_started = False
-    for element in _bounded_descendants(measure):
-        if element.tag == "KeySig":
-            return None if music_has_started else element
-        if element.tag in {"Chord", "Rest", "Note"}:
-            music_has_started = True
+    # Each voice starts at the measure boundary. A key at the start of a later
+    # voice still applies to earlier-serialized voices at that same boundary.
+    for stream in measure.findall("voice") or [measure]:
+        for element in stream:
+            if element.tag == "KeySig":
+                return element
+            if element.tag in {"Chord", "Rest", "Note", "MeasureRepeat", "location", "tick"}:
+                break
     return None
 
 
@@ -758,6 +766,16 @@ def _opening_key(
     key_signature = _opening_key_signature(measure)
     if key_signature is None:
         return _OpeningKey(0, None)
+    return _key_context(scope, key_signature, concert_pitch)
+
+
+def _key_context(
+    scope: _StaffScope,
+    key_signature: ET.Element,
+    concert_pitch: bool | None,
+) -> _OpeningKey:
+    """Read a local concert key without confusing legacy written key fields."""
+
     if _key_signature_kind(key_signature) == "atonal":
         return _OpeningKey(None, key_signature, is_custom=True)
 
@@ -790,6 +808,112 @@ def _opening_key(
     except ValueError as exc:
         raise ScoreFormatError(f"Invalid MuseScore key-signature value: {written}") from exc
     return _OpeningKey(concert, key_signature)
+
+
+def _staff_key_regions(
+    scope: _StaffScope,
+    concert_pitch: bool | None,
+) -> list[_KeyRegion]:
+    """Associate notes/chords with safely ordered, staff-local key changes.
+
+    Barline changes apply to every voice, regardless of serialization order.
+    Within one voice, sequential changes need no duration arithmetic. Multiple
+    voices or explicit cursor movements around an interior change require a
+    full tick map and are deliberately rejected instead of guessing.
+    """
+
+    musical_tags = {"Note", "Harmony"}
+    all_music = tuple(e for e in _bounded_descendants(scope.content) if e.tag in musical_tags)
+    signatures = _bounded_elements(scope.content, "KeySig")
+    opening = _opening_key(scope, concert_pitch)
+    if not signatures:
+        return [_KeyRegion(opening, all_music)]
+
+    regions: list[_KeyRegion] = []
+    covered: set[ET.Element] = set()
+    current = _OpeningKey(0, None)
+    for measure in scope.content.findall("Measure"):
+        streams = measure.findall("voice") or [measure]
+        initial_keys: list[ET.Element] = []
+        interior_keys: list[ET.Element] = []
+        cursor_moves = False
+        for stream in streams:
+            started = False
+            for item in stream:
+                if item.tag == "KeySig":
+                    (interior_keys if started else initial_keys).append(item)
+                elif item.tag in {"Chord", "Rest", "Note", "MeasureRepeat"}:
+                    started = True
+                elif item.tag in {"location", "tick"}:
+                    started = True
+                    cursor_moves = True
+
+        # All serialized keys must have an understood voice/measure position.
+        measure_keys = _bounded_elements(measure, "KeySig")
+        if set(measure_keys) != set(initial_keys + interior_keys):
+            raise ScoreFormatError("Key change has an unsupported score position; no output was written.")
+        covered.update(measure_keys)
+        if initial_keys:
+            current = _key_context(scope, initial_keys[0], concert_pitch)
+            for key in initial_keys[1:]:
+                other = _key_context(scope, key, concert_pitch)
+                if (
+                    other.signature != current.signature
+                    or _display_key(scope, other, concert_pitch)
+                    != _display_key(scope, current, concert_pitch)
+                    or _key_signature_kind(key) != _key_signature_kind(initial_keys[0])
+                ):
+                    raise ScoreFormatError("Conflicting key signatures at one measure boundary.")
+
+        music = tuple(e for e in _bounded_descendants(measure) if e.tag in musical_tags)
+        covered.update(music)
+        if not interior_keys:
+            regions.append(_KeyRegion(current, music))
+            continue
+        if len(streams) > 1 or cursor_moves:
+            raise ScoreFormatError(
+                "Mid-measure key changes with multiple voices or explicit cursor movements "
+                "require tick-aware respelling; no output was written. "
+                "Move the key change to a measure boundary in MuseScore first."
+            )
+
+        # Harmony placed before a KeySig at the same onset belongs to the new
+        # key too. Buffer non-duration events until the next chord/rest.
+        pending: list[ET.Element] = []
+        allowed_music = set(music)
+        for item in streams[0]:
+            if item.tag == "KeySig":
+                current = _key_context(scope, item, concert_pitch)
+                continue
+            pending.extend(
+                e for e in (item, *_bounded_descendants(item)) if e in allowed_music
+            )
+            if item.tag in {"Chord", "Rest", "Note", "MeasureRepeat"}:
+                regions.append(_KeyRegion(current, tuple(pending)))
+                pending.clear()
+        if pending:
+            regions.append(_KeyRegion(current, tuple(pending)))
+
+    if not {*all_music, *signatures}.issubset(covered):
+        raise ScoreFormatError("Key changes require measure-scoped music; no output was written.")
+    return regions
+
+
+def _display_key(
+    scope: _StaffScope,
+    key: _OpeningKey,
+    concert_pitch: bool | None,
+) -> int | None:
+    if key.signature is None or concert_pitch:
+        return key.signature
+    if key.key_signature is not None:
+        for field in ("actualKey", "accidental"):
+            value = _read_integer_field(key.key_signature, field)
+            if value is not None:
+                return value
+    shift = _instrument_tpc_shift(scope.instrument)
+    named = transpose_key_signature_by_tpc(key.signature, -shift)
+    return _normalize_written_signature(named, _effective_key_preference(scope)) if shift else named
 
 
 def _insert_initial_key_signature(
@@ -1067,11 +1191,13 @@ def _written_tpc_adjustment(
     scope: _StaffScope,
     tpc_shift: int,
     concert_pitch: bool | None = None,
+    *,
+    key: _OpeningKey | None = None,
 ) -> int:
     instrument_shift = _instrument_tpc_shift(scope.instrument)
     if not instrument_shift:
         return 0
-    opening = _opening_key(scope, concert_pitch)
+    opening = key if key is not None else _opening_key(scope, concert_pitch)
     if opening.signature is None:
         return 0
     target_concert = transpose_key_signature_by_tpc(opening.signature, tpc_shift)
@@ -1092,25 +1218,18 @@ def _harmony_tpc_shift(
     tpc_shift: int,
     written_adjustment: int,
     concert_pitch: bool | None,
+    *,
+    key: _OpeningKey | None = None,
 ) -> int:
     if concert_pitch or not tpc_shift:
         return tpc_shift
     instrument_shift = _instrument_tpc_shift(scope.instrument)
-    opening = _opening_key(scope, concert_pitch)
+    opening = key if key is not None else _opening_key(scope, concert_pitch)
     if not instrument_shift or opening.signature is None:
         return tpc_shift
 
-    source_written = None
-    if opening.key_signature is not None:
-        for field_name in ("actualKey", "accidental"):
-            source_written = _read_integer_field(opening.key_signature, field_name)
-            if source_written is not None:
-                break
-    if source_written is None:
-        source_written = _normalize_written_signature(
-            transpose_key_signature_by_tpc(opening.signature, -instrument_shift),
-            _effective_key_preference(scope),
-        )
+    source_written = _display_key(scope, opening, concert_pitch)
+    assert source_written is not None
     # Chord roots are already stored in the source's displayed spelling,
     # whereas written notes are rebuilt from concert TPC. Undo the source
     # key's enharmonic adjustment before applying the destination's adjustment.
@@ -1307,30 +1426,6 @@ def _validate_score_context(
                 "Fretted notes require chord-aware refretting and cannot be transposed "
                 "safely; no output was written."
             )
-        if scope.group == "pitched" and _instrument_tpc_shift(scope.instrument):
-            key_signatures = _bounded_elements(scope.content, "KeySig")
-            first_measure = _first_measure(scope.content)
-            opening_key_signature = (
-                _opening_key_signature(first_measure)
-                if first_measure is not None
-                else None
-            )
-            if has_content and any(
-                key_signature is not opening_key_signature
-                for key_signature in key_signatures
-            ):
-                raise ScoreFormatError(
-                    "Transposing-instrument staves with mid-score key changes require "
-                    "tick-aware written-pitch respelling; no output was written."
-                )
-        if scope.group == "pitched" and has_content and any(
-            _key_signature_folds_enharmonically(key_signature, tpc_shift)
-            for key_signature in _bounded_elements(scope.content, "KeySig")
-        ):
-            raise ScoreFormatError(
-                "A key change crosses the conventional enharmonic-signature boundary "
-                "and requires tick-aware note respelling; no output was written."
-            )
         if (
             scope.group == "pitched"
             and _bounded_elements(scope.content, "FretDiagram")
@@ -1420,33 +1515,42 @@ def transpose_mscx(
             instrument_shift = _instrument_tpc_shift(scope.instrument)
             instrument_interval = _instrument_interval(scope.instrument)
             has_instrument_transposition = instrument_interval not in {None, (0, 0)}
-            written_adjustment = _written_tpc_adjustment(
-                scope,
-                note_tpc_shift,
-                context_concert_pitch,
+            regions = (
+                _staff_key_regions(scope, context_concert_pitch)
+                if transposition_changes_spelling else [_KeyRegion(
+                    _opening_key(scope, context_concert_pitch),
+                    tuple(e for e in _bounded_descendants(scope.content)
+                          if e.tag in {"Note", "Harmony"}),
+                )]
             )
-            for note in _bounded_elements(scope.content, "Note"):
-                if _transpose_note(
-                    note,
-                    shift,
-                    note_tpc_shift,
-                    target_spelling,
-                    strict_pitch_range=strict_pitch_range,
-                    concert_pitch=context_concert_pitch,
-                    instrument_tpc_shift=instrument_shift,
-                    written_tpc_adjustment=written_adjustment,
-                    has_instrument_transposition=has_instrument_transposition,
-                ):
-                    note_count += 1
-            harmony_shift = _harmony_tpc_shift(
-                scope,
-                note_tpc_shift,
-                written_adjustment,
-                context_concert_pitch,
-            )
-            for harmony in _bounded_elements(scope.content, "Harmony"):
-                if _transpose_harmony(harmony, harmony_shift):
-                    harmony_count += 1
+            for region in regions:
+                local_shift = note_tpc_shift
+                if region.key.signature is not None:
+                    # A modulation can push the destination past seven sharps
+                    # or flats. Use the local folded key for notes and chords,
+                    # not just for the printed signature.
+                    local_shift = transpose_key_signature_by_tpc(
+                        region.key.signature, note_tpc_shift,
+                    ) - region.key.signature
+                written_adjustment = _written_tpc_adjustment(
+                    scope, local_shift, context_concert_pitch, key=region.key,
+                )
+                harmony_shift = _harmony_tpc_shift(
+                    scope, local_shift, written_adjustment, context_concert_pitch, key=region.key,
+                )
+                for element in region.elements:
+                    if element.tag == "Note":
+                        if _transpose_note(
+                            element, shift, local_shift, target_spelling,
+                            strict_pitch_range=strict_pitch_range,
+                            concert_pitch=context_concert_pitch,
+                            instrument_tpc_shift=instrument_shift,
+                            written_tpc_adjustment=written_adjustment,
+                            has_instrument_transposition=has_instrument_transposition,
+                        ):
+                            note_count += 1
+                    elif _transpose_harmony(element, harmony_shift):
+                        harmony_count += 1
             for key_signature in _bounded_elements(scope.content, "KeySig"):
                 if _transpose_key_signature(
                     key_signature,
