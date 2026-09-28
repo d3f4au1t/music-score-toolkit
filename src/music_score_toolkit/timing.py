@@ -31,6 +31,7 @@ _DURATIONS = {
 class MeasureTiming:
     length: Fraction
     positions: dict[ET.Element, Fraction]
+    durations: dict[ET.Element, Fraction]
 
 
 def _field(element: ET.Element, tag: str, default: str | None = None) -> str | None:
@@ -154,6 +155,7 @@ def read_measure_timing(
     if len(voices) > 4:
         raise ScoreTimingError("MuseScore supports at most four voices per staff.")
     positions: dict[ET.Element, Fraction] = {}
+    durations: dict[ET.Element, Fraction] = {}
     for voice in voices:
         cursor = Fraction(0)
         factor = Fraction(1)
@@ -200,6 +202,7 @@ def read_measure_timing(
             else:
                 positions[item] = cursor
                 if item.tag == "Chord" and not advances_position(item):
+                    durations[item] = Fraction(0)
                     if _integer(item, "staffMove", "0") != 0:
                         raise ScoreTimingError("Cross-staff grace notes need staff-aware timing support.")
                     pending_grace = True
@@ -208,6 +211,7 @@ def read_measure_timing(
                         raise ScoreTimingError("Grace notes have no following main chord.")
                     pending_grace = False
                     duration = _duration(item, meter, length) * factor
+                    durations[item] = duration
                     if cursor >= length or duration <= 0 or cursor + duration > length:
                         raise ScoreTimingError("Musical duration falls outside its measure.")
                     cursor += duration
@@ -217,4 +221,4 @@ def read_measure_timing(
                 raise ScoreTimingError("Cursor position falls outside its measure.")
         if tuplets or pending_grace:
             raise ScoreTimingError("Unclosed tuplet or grace group; key timing is incomplete.")
-    return MeasureTiming(length, positions)
+    return MeasureTiming(length, positions, durations)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import lzma
 import os
 import re
@@ -16,6 +17,9 @@ import zlib
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
+
+from .export_keys import KeyPart, native_key_plan, restore_exported_keys
+from .mscz import _file_snapshot
 
 
 class ExecutableNotFoundError(FileNotFoundError):
@@ -563,6 +567,44 @@ def _validate_generated_output(path: Path, *, size: int) -> bool:
     return True
 
 
+def _restore_musicxml_keys(path: Path, plan: tuple[KeyPart, ...]) -> None:
+    """Repair only the staged export; the destination is still untouched."""
+    if not plan:
+        return
+    if path.suffix.lower() != ".mxl":
+        with path.open("rb") as stream:
+            payload = stream.read(_MAX_MUSICXML_SIZE + 1)
+        if len(payload) > _MAX_MUSICXML_SIZE:
+            raise ValueError("MusicXML is too large to verify key changes.")
+        repaired = restore_exported_keys(payload, plan)
+        if repaired != payload:
+            path.write_bytes(repaired)
+        return
+    # The package has already passed full validation. Only its primary score
+    # changes; alternate renditions, assets, member metadata and comments stay.
+    replacement = path.with_name("repaired.mxl")
+    with zipfile.ZipFile(path) as archive:
+        members = _validated_zip_members(archive)
+        container = ET.fromstring(_read_zip_member(
+            archive, members[MUSICXML_CONTAINER], maximum_size=_MAX_CONTAINER_XML_SIZE,
+        ))
+        primary = next(e for e in container.iter() if _local_name(e.tag) == "rootfile")
+        name = _collapse_xml_token(primary.get("full-path", ""))
+        payload = _read_zip_member(archive, members[name], maximum_size=_MAX_MUSICXML_SIZE)
+        repaired = restore_exported_keys(payload, plan)
+        if repaired == payload:
+            return
+        with zipfile.ZipFile(replacement, "w") as target:
+            target.comment = archive.comment
+            for info in archive.infolist():
+                if info.filename == name:
+                    target.writestr(copy.copy(info), repaired)
+                else:
+                    with archive.open(info) as reader, target.open(copy.copy(info), "w") as writer:
+                        shutil.copyfileobj(reader, writer, length=_ZIP_READ_CHUNK_SIZE)
+    os.replace(replacement, path)
+
+
 def find_executable(
     *,
     label: str,
@@ -681,6 +723,12 @@ def convert_score(
     temporary_output = staging_directory / f"output{destination.suffix}"
 
     try:
+        key_plan = ()
+        if destination.suffix.lower() in {".musicxml", ".xml", ".mxl"}:
+            try:
+                key_plan = native_key_plan(source)
+            except (OSError, ValueError, zipfile.BadZipFile) as exc:
+                raise RuntimeError(f"Cannot verify native key changes for MusicXML export: {exc}") from exc
         try:
             completed = subprocess.run(
                 [str(executable), str(source), "-o", str(temporary_output)],
@@ -737,6 +785,17 @@ def convert_score(
                 f"MuseScore failed to convert {source} to {destination} "
                 f"(exit code {completed.returncode}); staged output was not published."
             )
+        if key_plan:
+            try:
+                if _file_snapshot(source.stat()) != _file_snapshot(source_stat):
+                    raise ValueError("Source score changed during export.")
+                _restore_musicxml_keys(temporary_output, key_plan)
+                _validate_generated_output(temporary_output, size=temporary_output.stat().st_size)
+            except (OSError, ValueError, ET.ParseError, zipfile.BadZipFile) as exc:
+                raise RuntimeError(
+                    f"Cannot safely preserve MusicXML key changes: {exc} "
+                    "Keep the native MSCZ master; staged output was not published."
+                ) from exc
         try:
             os.chmod(temporary_output, output_mode)
             os.replace(temporary_output, destination)

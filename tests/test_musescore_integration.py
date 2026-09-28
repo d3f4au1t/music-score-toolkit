@@ -139,13 +139,7 @@ def test_modulating_score_keeps_all_voices_keys_chords_and_markings(tmp_path, la
             expected_spelling = expected_spelling[:1] * 3 + expected_spelling[1:]
         assert spelled == expected_spelling
         exported_keys = [int(k.text) for k in root.findall(".//attributes/key/fifths")]
-        if layout != "two_voices":
-            # MuseScore 4.7.4 omits interior keys in MusicXML even for the
-            # unmodified input. Native reload above must preserve every key;
-            # don't mistake this exporter limitation for lost MSCZ content.
-            assert exported_keys in (keys, keys[:1])
-        else:
-            assert exported_keys == keys
+        assert exported_keys == keys
         assert [(h.findtext("root/root-step"), h.findtext("root/root-alter", "0"))
                 for h in root.iter("harmony")] == chords
         for tag in ("work-title", "words", "per-minute"):
