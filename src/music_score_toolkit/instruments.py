@@ -148,8 +148,11 @@ def retarget_instrument_mscx(
             raise ScoreFormatError("Instrument conversion requires conventional key signatures.")
         preference = scope.key_preference
         for region in _staff_key_regions(scope, source_concert_pitch):
+            if not region.elements:
+                continue
             concert_key = region.key.signature
-            assert concert_key is not None
+            if concert_key is None:
+                raise ScoreFormatError("Instrument conversion requires measure-scoped music.")
             destination_key = _written_key(concert_key, new_tpc_interval, preference)
             source_display_key = _display_key(scope, region.key, source_concert_pitch)
             assert source_display_key is not None

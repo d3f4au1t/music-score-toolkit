@@ -840,6 +840,10 @@ def _staff_key_regions(
         for stream in streams:
             started = False
             for item in stream:
+                if item.tag not in {"Chord", "Note", "Harmony", *_SCORE_BOUNDARIES} and any(
+                    e.tag in musical_tags for e in _bounded_descendants(item)
+                ):
+                    raise ScoreFormatError("Musical event has an unsupported key-change position.")
                 if item.tag == "KeySig":
                     (interior_keys if started else initial_keys).append(item)
                 elif item.tag in {"Chord", "Rest", "Note", "MeasureRepeat"}:
@@ -866,7 +870,6 @@ def _staff_key_regions(
                     raise ScoreFormatError("Conflicting key signatures at one measure boundary.")
 
         music = tuple(e for e in _bounded_descendants(measure) if e.tag in musical_tags)
-        covered.update(music)
         if not interior_keys:
             regions.append(_KeyRegion(current, music))
             continue
@@ -894,7 +897,8 @@ def _staff_key_regions(
         if pending:
             regions.append(_KeyRegion(current, tuple(pending)))
 
-    if not {*all_music, *signatures}.issubset(covered):
+    assigned = [e for region in regions for e in region.elements]
+    if Counter(assigned) != Counter(all_music) or set(signatures) != covered:
         raise ScoreFormatError("Key changes require measure-scoped music; no output was written.")
     return regions
 
