@@ -83,6 +83,11 @@ def retarget_instrument_mscx(
     if part_name is not None and not part_name.strip():
         raise ValueError("Part name cannot be empty.")
     document = _parse_mscx(content)
+    if not document.root.get("version", "4.0").startswith("4."):
+        raise ScoreFormatError(
+            "Instrument conversion requires MuseScore 4 format; "
+            "open and save this score in MuseScore 4 first."
+        )
     contexts = _score_contexts(document.root, concert_pitch)
     if len(contexts) != 1 or document.root.find(".//Excerpt") is not None:
         raise ScoreFormatError(
@@ -210,7 +215,10 @@ def retarget_instrument_mscx(
     _set_text(selected_part, "trackName", name)
     for field in ("longName", "shortName", "trackName"):
         _set_text(instrument, field, name)
-    style = score.find("Style")
+    styles = score.findall("Style")
+    if len(styles) > 1:
+        raise ScoreFormatError("Instrument conversion requires one unambiguous score style.")
+    style = styles[0] if styles else None
     if style is None:
         style = ET.Element("Style")
         score.insert(0, style)

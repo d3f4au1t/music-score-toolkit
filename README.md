@@ -111,9 +111,10 @@ Octave-transposing variants such as bass clarinet are not separate presets yet.
 For a multi-part score, add `--part 2` (part numbers start at 1). Omitting it
 lists the available choices in an error. Multi-part input must already be in
 written-pitch view; the other parts are preserved. The command currently
-requires a score without linked excerpts and a selected part without mid-score
+requires MuseScore 4 format, a score without linked excerpts, and a selected part without mid-score
 key/instrument changes, custom or atonal keys, percussion, TAB, or fret diagrams.
 Export a standalone part from MuseScore when an archive includes linked excerpts.
+Open and save older score files in MuseScore 4 before instrument conversion.
 
 Use `transpose --from-key C --to-key D` when you actually want to raise the
 music's sounding pitch by a whole step instead.

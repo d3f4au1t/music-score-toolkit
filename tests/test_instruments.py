@@ -83,6 +83,46 @@ def test_bb_to_c_round_trip_preserves_music_and_chords():
     assert root.findtext(".//Instrument/transposeChromatic") == "0"
 
 
+@pytest.mark.parametrize(
+    ("target", "written_tpc", "symbol"),
+    [("Bb", "16", "accidentalQuarterToneSharpStein"),
+     ("A", "18", "accidentalQuarterToneFlatStein")],
+)
+def test_microtonal_conversion_preserves_sounding_pitch_and_correct_symbol(
+    target, written_tpc, symbol,
+):
+    xml = b"""<museScore version="4.0"><Score><Part><Staff id="1"/><Instrument/></Part>
+      <Staff id="1"><Measure><Note><pitch>60</pitch><tpc>14</tpc><centOffset>50</centOffset>
+        <Accidental><subtype>accidentalQuarterToneSharpStein</subtype></Accidental>
+      </Note></Measure></Staff></Score></museScore>"""
+    rendered, _ = retarget_instrument_mscx(xml, target)
+    root = ET.fromstring(rendered)
+    sounding = int(root.findtext(".//pitch")) + float(root.findtext(".//centOffset")) / 100
+    assert sounding == 60.5
+    assert root.findtext(".//tpc2") == written_tpc
+    assert root.findtext(".//Accidental/subtype") == symbol
+    restored, _ = retarget_instrument_mscx(rendered, "C")
+    root = ET.fromstring(restored)
+    assert root.findtext(".//pitch") == "60"
+    assert root.findtext(".//centOffset") == "50"
+    assert root.findtext(".//Accidental/subtype") == "accidentalQuarterToneSharpStein"
+
+
+@pytest.mark.parametrize("version", ["2.06", "3.02", "5.0"])
+def test_non_musescore_4_formats_require_resaving_before_instrument_conversion(version):
+    with pytest.raises(ScoreFormatError, match="requires MuseScore 4 format"):
+        retarget_instrument_mscx(CONCERT_C.replace(b'4.0', version.encode()))
+
+
+@pytest.mark.parametrize("group", ["percussion", "tablature"])
+def test_non_pitched_selected_staff_is_rejected(group):
+    xml = CONCERT_C.replace(
+        b'<Staff id="1"/>', f'<Staff id="1"><StaffType group="{group}"/></Staff>'.encode(),
+    )
+    with pytest.raises(ScoreFormatError, match="pitched staves only"):
+        retarget_instrument_mscx(xml)
+
+
 def test_source_enharmonic_written_chords_are_converted_to_concert_spelling():
     xml = b"""<museScore><Score><Part><Staff id="1"/><Instrument>
       <transposeDiatonic>-1</transposeDiatonic><transposeChromatic>-2</transposeChromatic>
