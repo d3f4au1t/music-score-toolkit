@@ -107,7 +107,7 @@ def test_legacy_modulations_derive_concert_key_using_instrument_and_view(concert
 def test_ambiguous_interior_changes_fail_closed(operation, extra):
     xml = score(f"<Measure><voice>{key(0, 2)}{note()}{key(5, -5)}"
                 f"{note(59, 19, 9)}{extra}</voice></Measure>")
-    with pytest.raises(ScoreFormatError, match="Mid-measure key changes"):
+    with pytest.raises(ScoreFormatError, match="tick-aware"):
         transform(xml, operation)
     # An unchanged-key operation remains a byte-preserving inspection.
     rendered, report = transpose_mscx(xml, "C", "C")
@@ -217,6 +217,7 @@ def test_all_conventional_modulations_preserve_pitch_and_match_local_signatures(
                 expected = folded(local + shift)
                 actual = written_key(expected, source_instrument)
                 assert measure.findtext(".//KeySig/concertKey") == str(expected)
+                assert measure.findtext(".//KeySig/actualKey") == str(actual)
                 assert measure.findtext(".//Note/tpc") == str(14 + expected)
                 # A true C->C no-op retains the source spellings exactly.
                 assert measure.findtext(".//Note/tpc2") == str(14 + actual)
@@ -235,3 +236,48 @@ def test_all_conventional_modulations_preserve_pitch_and_match_local_signatures(
                 assert measure.findtext(".//Note/tpc2") == str(14 + expected)
                 assert measure.findtext(".//KeySig/actualKey") == str(expected)
                 assert measure.findtext(".//Harmony/root") == str(14 + expected)
+
+
+@pytest.mark.parametrize("operation", ["transpose", "instrument"])
+def test_trailing_courtesy_signature_is_not_treated_as_next_measures_key(operation):
+    xml = score(f"<Measure><voice>{key(0, 2)}{note()}{key(5, -5)}</voice></Measure>"
+                f"<Measure><voice>{note()}</voice></Measure>")
+    with pytest.raises(ScoreFormatError, match="courtesy"):
+        transform(xml, operation)
+
+
+def test_nontransposing_mid_measure_changes_keep_working_without_local_respelling():
+    xml = score(f"<Measure><voice>{key(0, 0)}{note(written=14)}{key(1, 1)}"
+                f"{note(67, 15, 15)}</voice><voice>{note(written=14)}</voice></Measure>",
+                instrument="C")
+    rendered, _ = transpose_mscx(xml, "C", "D")
+    root = ET.fromstring(rendered)
+    assert [n.findtext("tpc") for n in root.iter("Note")] == ["16", "17", "16"]
+
+
+@pytest.mark.parametrize("grace", ["acciaccatura", "appoggiatura", "grace4", "grace16after"])
+def test_grace_chords_share_key_at_following_normal_chords_onset(grace):
+    grace_note = note(59, 19, 9).replace("<Chord>", f"<Chord><{grace}/>")
+    xml = score(f"<Measure><voice>{key(0, 2)}{note()}{grace_note}"
+                f"{key(5, -5)}{note(71, 19, 9)}</voice></Measure>")
+    rendered, _ = transpose_mscx(xml, "C", "D")
+    root = ET.fromstring(rendered)
+    assert [n.findtext("tpc2") for n in root.iter("Note")] == ["18", "11", "11"]
+    assert root.find(f".//{grace}") is not None
+
+
+def test_grace_before_initial_key_does_not_make_key_look_like_a_modulation():
+    grace_note = note(59, 19, 9).replace("<Chord>", "<Chord><acciaccatura/>")
+    xml = score(f"<Measure><voice>{grace_note}{key(5, -5)}{note(71, 19, 9)}</voice></Measure>")
+    rendered, _ = transpose_mscx(xml, "B", "C")
+    root = ET.fromstring(rendered)
+    assert [n.findtext("tpc2") for n in root.iter("Note")] == ["16", "16"]
+    assert len(list(root.iter("KeySig"))) == 1
+
+
+def test_cursor_cannot_move_notes_across_a_barline_key_change():
+    xml = score(f"<Measure><voice>{key(0, 2)}{note()}</voice></Measure>"
+                f"<Measure><voice>{key(5, -5)}<location><fractions>-1/4</fractions>"
+                f"</location>{note()}</voice></Measure>")
+    with pytest.raises(ScoreFormatError, match="explicit cursor"):
+        retarget_instrument_mscx(xml)

@@ -133,6 +133,10 @@ _QUARTER_TONES_TO_MICROTONAL_ACCIDENTAL = {
 }
 
 _SCORE_BOUNDARIES = frozenset({"Part", "SharedPart", "Staff", "Score"})
+_GRACE_TAGS = frozenset({
+    "appoggiatura", "acciaccatura", "grace4", "grace16", "grace32",
+    "grace8after", "grace16after", "grace32after",
+})
 
 _MAX_ARCHIVE_MEMBERS = 10_000
 _MAX_ARCHIVE_MEMBER_SIZE = 2 * 1024 * 1024 * 1024
@@ -744,6 +748,12 @@ def _first_measure(staff: ET.Element) -> ET.Element | None:
     return next((child for child in staff if child.tag == "Measure"), None)
 
 
+def _advances_key_position(element: ET.Element) -> bool:
+    if element.tag == "Chord":
+        return not any(child.tag in _GRACE_TAGS for child in element)
+    return element.tag in {"Rest", "Note", "MeasureRepeat"}
+
+
 def _opening_key_signature(measure: ET.Element) -> ET.Element | None:
     # Each voice starts at the measure boundary. A key at the start of a later
     # voice still applies to earlier-serialized voices at that same boundary.
@@ -751,7 +761,7 @@ def _opening_key_signature(measure: ET.Element) -> ET.Element | None:
         for element in stream:
             if element.tag == "KeySig":
                 return element
-            if element.tag in {"Chord", "Rest", "Note", "MeasureRepeat", "location", "tick"}:
+            if _advances_key_position(element) or element.tag in {"location", "tick"}:
                 break
     return None
 
@@ -828,6 +838,7 @@ def _staff_key_regions(
     opening = _opening_key(scope, concert_pitch)
     if not signatures:
         return [_KeyRegion(opening, all_music)]
+    changing_keys = any(key is not opening.key_signature for key in signatures)
 
     regions: list[_KeyRegion] = []
     covered: set[ET.Element] = set()
@@ -846,7 +857,7 @@ def _staff_key_regions(
                     raise ScoreFormatError("Musical event has an unsupported key-change position.")
                 if item.tag == "KeySig":
                     (interior_keys if started else initial_keys).append(item)
-                elif item.tag in {"Chord", "Rest", "Note", "MeasureRepeat"}:
+                elif _advances_key_position(item):
                     started = True
                 elif item.tag in {"location", "tick"}:
                     started = True
@@ -870,6 +881,11 @@ def _staff_key_regions(
                     raise ScoreFormatError("Conflicting key signatures at one measure boundary.")
 
         music = tuple(e for e in _bounded_descendants(measure) if e.tag in musical_tags)
+        if cursor_moves and changing_keys:
+            raise ScoreFormatError(
+                "Key changes with explicit cursor movements require tick-aware respelling; "
+                "no output was written. Re-save a simplified standalone part in MuseScore first."
+            )
         if not interior_keys:
             regions.append(_KeyRegion(current, music))
             continue
@@ -878,6 +894,12 @@ def _staff_key_regions(
                 "Mid-measure key changes with multiple voices or explicit cursor movements "
                 "require tick-aware respelling; no output was written. "
                 "Move the key change to a measure boundary in MuseScore first."
+            )
+        last_key_index = list(streams[0]).index(interior_keys[-1])
+        if not any(_advances_key_position(item) for item in list(streams[0])[last_key_index + 1:]):
+            raise ScoreFormatError(
+                "A trailing key signature may be an end-of-measure courtesy, not a key change; "
+                "tick-aware respelling is required and no output was written."
             )
 
         # Harmony placed before a KeySig at the same onset belongs to the new
@@ -891,7 +913,7 @@ def _staff_key_regions(
             pending.extend(
                 e for e in (item, *_bounded_descendants(item)) if e in allowed_music
             )
-            if item.tag in {"Chord", "Rest", "Note", "MeasureRepeat"}:
+            if _advances_key_position(item):
                 regions.append(_KeyRegion(current, tuple(pending)))
                 pending.clear()
         if pending:
@@ -1519,9 +1541,13 @@ def transpose_mscx(
             instrument_shift = _instrument_tpc_shift(scope.instrument)
             instrument_interval = _instrument_interval(scope.instrument)
             has_instrument_transposition = instrument_interval not in {None, (0, 0)}
+            needs_key_context = instrument_shift or any(
+                _key_signature_folds_enharmonically(key, note_tpc_shift)
+                for key in _bounded_elements(scope.content, "KeySig")
+            )
             regions = (
                 _staff_key_regions(scope, context_concert_pitch)
-                if transposition_changes_spelling else [_KeyRegion(
+                if transposition_changes_spelling and needs_key_context else [_KeyRegion(
                     _opening_key(scope, context_concert_pitch),
                     tuple(e for e in _bounded_descendants(scope.content)
                           if e.tag in {"Note", "Harmony"}),
@@ -1529,7 +1555,10 @@ def transpose_mscx(
             )
             for region in regions:
                 local_shift = note_tpc_shift
-                if region.key.signature is not None:
+                if region.key.signature is not None and (
+                    region.key.key_signature is None
+                    or _key_signature_kind(region.key.key_signature) == "conventional"
+                ):
                     # A modulation can push the destination past seven sharps
                     # or flats. Use the local folded key for notes and chords,
                     # not just for the printed signature.
